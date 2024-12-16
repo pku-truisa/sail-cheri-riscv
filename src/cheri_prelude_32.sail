@@ -60,68 +60,51 @@
 /*  SUCH DAMAGE.                                                                         */
 /*=======================================================================================*/
 
+/*=======================================================================================*/
+/*  CHERI RISCV Sail Model (Truisa Version)                                              */
+/*                                                                                       */
+/*  This CHERI Sail RISC-V architecture model here, comprising all files and             */
+/*  directories except for the snapshots of the Lem and Sail libraries in the            */
+/*  prover_snapshots directory (which include copies of their licenses), is subject      */
+/*  to the BSD two-clause licence below.                                                 */
+/*                                                                                       */
+/*  Copyright (c) 2024-2025                                                              */
+/*    Dong Tong, Peking University                                                       */
+/*=======================================================================================*/
+
 /* width of capability in bytes (excluding tag) */
-type cap_size : Int = 16
+type cap_size : Int = 4
 let  cap_size = sizeof(cap_size)
-type log2_cap_size : Int = 4
+type log2_cap_size : Int = 2
 let  log2_cap_size = sizeof(log2_cap_size)
 type CapBits = bits(8 * cap_size)
-/* width of otype field in bits */
-type cap_hperms_width : Int = 12
-let  cap_hperms_width = sizeof(cap_hperms_width)
-type cap_uperms_width : Int = 4
-let  cap_uperms_width = sizeof(cap_uperms_width)
-type cap_otype_width : Int = 18
-let  cap_otype_width = sizeof(cap_otype_width)
-type cap_reserved_width : Int = 2
-let  cap_reserved_width = sizeof(cap_reserved_width)
 type cap_flags_width : Int = 1
 let  cap_flags_width = sizeof(cap_flags_width)
-type cap_mantissa_width : Int = 14
-let  cap_mantissa_width = sizeof(cap_mantissa_width)
-type cap_E_width : Int = 6
+type cap_E_width : Int = 5
 let  cap_E_width = sizeof(cap_E_width)
-type cap_addr_width : Int = xlen
+type cap_addr_width : Int = xlen - 6
 let  cap_addr_width = sizeof(cap_addr_width)
 type cap_len_width : Int = cap_addr_width + 1
 let  cap_len_width = sizeof(cap_len_width)
 
 /* For CLoadTags and CClearTags, which operate at cache line granularity */
-type caps_per_cache_line : Int = 4
-let  caps_per_cache_line = sizeof(caps_per_cache_line)
-
-type internal_E_take_bits : Int = 3
-let  internal_E_take_bits = sizeof(internal_E_take_bits)
+type caps_per_cache_line : Int = 16
+let  caps_per_cache_line = sizeof(caps_per_cache_line
 
 /* Capability format completely compressed. Tag is out of band */
 struct EncCapability = {
-  perms      : bits(cap_uperms_width + cap_hperms_width),
-  otype      : bits(cap_otype_width),
-  reserved   : bits(cap_reserved_width),
   flags      : bits(cap_flags_width),
-  internal_E : bit,
-  T          : bits(cap_mantissa_width - 2),
-  B          : bits(cap_mantissa_width),
+  E          : bit,
   address    : bits(cap_addr_width)
 }
 
 function capBitsToEncCapability(c) : CapBits -> EncCapability = struct {
-  perms      = c[127..112],
-  reserved   = c[111..110],
-  flags      = c[109..109],
-  otype      = c[108..91],
-  internal_E = c[90],
-  T          = c[89..78],
-  B          = c[77..64],
-  address    = c[63..0]
+  flags      = c[31..31],
+  E          = c[30..27],
+  address    = c[26..0]
 }
 
 function encCapToBits(cap) : EncCapability -> CapBits =
-  cap.perms @
-  cap.reserved @
   cap.flags @
-  cap.otype @
-  [cap.internal_E] @
-  cap.T @
-  cap.B @
+  cap.E @
   cap.address
