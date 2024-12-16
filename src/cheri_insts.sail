@@ -161,30 +161,15 @@ function clause execute(CJALR(imm, cs1, cd)) = {
 
 /* Operations that extract parts of a capability into GPR */
 
-union clause ast = CGetPerm   : (regidx, regidx)
-union clause ast = CGetType   : (regidx, regidx)
 union clause ast = CGetBase   : (regidx, regidx)
 union clause ast = CGetLen    : (regidx, regidx)
 union clause ast = CGetTag    : (regidx, regidx)
-union clause ast = CGetSealed : (regidx, regidx)
 union clause ast = CGetOffset : (regidx, regidx)
 union clause ast = CGetAddr   : (regidx, regidx)
 union clause ast = CGetFlags  : (regidx, regidx)
 union clause ast = CGetHigh   : (regidx, regidx)
 union clause ast = CGetTop    : (regidx, regidx)
 
-/*!
- * The least significant [cap_hperms_width] bits of integer register *rd* are
- * set equal to the **perms** field of capability register *cs1*; bits
- * [cap_uperms_shift] to [cap_uperms_shift]+[cap_uperms_width]-1 of *rd* are set
- * equal to the **uperms** field of *cs1*.
- * The other bits of *rd* are set to zero.
- */
-function clause execute (CGetPerm(rd, cs1)) = {
-  let capVal = C(cs1);
-  X(rd) = zero_extend(getCapPerms(capVal));
-  RETIRE_SUCCESS
-}
 
 /*!
  * Integer register *rd* is set equal to the zero-extended **flags** field of
@@ -193,18 +178,6 @@ function clause execute (CGetPerm(rd, cs1)) = {
 function clause execute (CGetFlags(rd, cs1)) = {
   let capVal = C(cs1);
   X(rd) = zero_extend(getCapFlags(capVal));
-  RETIRE_SUCCESS
-}
-
-/*!
- * Integer register *rd* is set equal to the **otype** field of capability
- * register *cs1*.
- */
-function clause execute (CGetType(rd, cs1)) = {
-  let capVal = C(cs1);
-  X(rd) = if   hasReservedOType(capVal)
-          then sign_extend(capVal.otype)
-          else zero_extend(capVal.otype);
   RETIRE_SUCCESS
 }
 
@@ -316,17 +289,6 @@ function clause execute (CGetTag(rd, cs1)) = {
 }
 
 /*!
- * The low bit of integer register *rd* is set to 0 if *cs1* is unsealed
- * and to 1 otherwise.
- * All other bits of *rd* are cleared.
- */
-function clause execute (CGetSealed(rd, cs1)) = {
-  let capVal = C(cs1);
-  X(rd) = zero_extend(bool_to_bits(isCapSealed(capVal)));
-  RETIRE_SUCCESS
-}
-
-/*!
  * Integer register *rd* is set equal to the **address** field of capability
  * register *cs1*.
  */
@@ -431,29 +393,6 @@ function clause execute (CSpecialRW(cd, scr, cs1)) = {
     };
     RETIRE_SUCCESS
   }
-}
-
-union clause ast = CAndPerm : (regidx, regidx, regidx)
-/*!
- * Capability register *cd* is replaced with the contents of capability
- * register *cs1* with the **perms** field set to the bitwise and of its
- * previous value and bits 0 to [cap_hperms_width]-1 of integer register *rs2*
- * and the **uperms** field set to the bitwise and of its previous value and
- * bits [cap_uperms_shift] to [cap_uperms_shift]+[cap_uperms_width]-1 of *rs2*.
- * If *cs1* was sealed then *cd*.**tag** is cleared.
- */
-function clause execute(CAndPerm(cd, cs1, rs2)) = {
-  let cs1_val = C(cs1);
-  let rs2_val = X(rs2);
-
-  let perms = getCapPerms(cs1_val);
-  let mask = truncate(rs2_val, cap_perms_width);
-
-  let inCap = clearTagIfSealed(cs1_val);
-  let newCap = setCapPerms(inCap, (perms & mask));
-
-  C(cd) = newCap;
-  RETIRE_SUCCESS
 }
 
 union clause ast = CSetFlags : (regidx, regidx, regidx)
@@ -817,34 +756,6 @@ function clause execute (CBuildCap(cd, cs1, cs2)) = {
   RETIRE_SUCCESS
 }
 
-union clause ast = CCopyType : (regidx, regidx, regidx)
-/*!
- * Capability register *cd* is replaced with the contents of capability
- * register *cs1* with the **address** set to *cs2*.**otype** and the
- * **tag** field cleared if *cs2* has a reserved **otype** or if *cs1*
- * was sealed.
- *
- * ## Notes
- *
- * - Reserved otypes always result in untagged capabilities, as, at the
- *   moment, all reserved otypes are constructed using ambiently-available
- *   actions. [CCSeal] knows how to work with these.
- */
-function clause execute (CCopyType(cd, cs1, cs2)) = {
-  let cs1_val = C(cs1);
-  let cs2_val = C(cs2);
-
-  let reserved = hasReservedOType(cs2_val);
-  let otype : xlenbits = if reserved then sign_extend(cs2_val.otype)
-                                     else zero_extend(cs2_val.otype);
-
-  let inCap = clearTagIfSealed(cs1_val);
-  let (representable, newCap) = setCapAddr(inCap, otype);
-
-  C(cd) = clearTagIf(newCap, reserved | not(representable));
-  RETIRE_SUCCESS
-}
-
 union clause ast = CRRL : (regidx, regidx)
 /*!
  * Integer register *rd* is set to the smallest value greater or equal to *rs1*
@@ -919,218 +830,6 @@ function clause execute (CSEQX(rd, cs1, cs2)) = {
   let cs2_val = C(cs2);
   X(rd) = zero_extend(bool_to_bits(cs1_val == cs2_val));
   RETIRE_SUCCESS
-}
-
-union clause ast = CSeal : (regidx, regidx, regidx)
-/*!
- * Capability register *cd* is replaced with capability register *cs1*, and is
- * sealed with **otype** equal to the **address** field of capability register
- * *cs2*. If *cs2* is unable to authorize the sealing, or if *cs1* was already
- * sealed, then the **tag** field of *cd* is cleared.
- */
-function clause execute (CSeal(cd, cs1, cs2)) = {
-  let cs1_val = C(cs1);
-  let cs2_val = C(cs2);
-
-  let cs2_cursor = getCapCursor(cs2_val);
-  let (cs2_base, cs2_top) = getCapBounds(cs2_val);
-
-  let permitted = cs2_val.tag
-                & not(isCapSealed(cs2_val))
-                & cs2_val.permit_seal
-                & (cs2_cursor >= cs2_base)
-                & (cs2_cursor < cs2_top)
-                & (cs2_cursor <= cap_max_otype);
-
-  let inCap = clearTagIfSealed(cs1_val);
-  let newCap = sealCap(inCap, to_bits(cap_otype_width, cs2_cursor));
-
-  C(cd) = clearTagIf(newCap, not(permitted));
-  RETIRE_SUCCESS
-}
-
-union clause ast = CCSeal : (regidx, regidx, regidx)
-/*!
- * Capability register *cd* is replaced with capability register *cs1*, and is
- * conditionally sealed with **otype** equal to the **address** field of
- * capability register *cs2*. The conditions under which the input is passed
- * through unaltered are intended to permit a fast branchless rederivation
- * sequence with multiple sealing authorities with a single [CBuildCap] and a
- * set of [CCopyType] and [CCSeal] pairs when swapping capabilities in from
- * disk. Other than these conditions, if *cs2* is unable to authorize the
- * sealing, the **tag** field of *cd* is cleared.
- *
- * ## Notes
- *
- * - The intent is that this is used for rederiving swapped-out capabilities,
- *   so the expectation is that this whole sequence is guarded by a check on
- *   whether the **tag** field of the capability was valid.
- *
- * - If the input to be conditionally sealed is already sealed it is passed
- *   through before any futher checks are made. This allows multiple [CCSeal]s
- *   in a chain, any of which can be the one to seal the initial input. The
- *   intent is that all of these [CCSeal]s' authorities will have been produced
- *   by [CCopyType]s of the same input (i.e., they will all attempt to seal to
- *   the same type), but that's not, strictly, required. Sealed capabilities
- *   with a reserved **otype** are also constructed directly by [CBuildCap].
- *
- * - To avoid the need to branch on whether the original capability was sealed,
- *   attempts to seal with the reserved unsealed **otype** will leave the
- *   capability unmodified rather than trap.
- *
- * - To avoid the need to check which is the correct authority, any sealing
- *   request where the **address** of capability register *cs2* is out of
- *   bounds will leave the capability unmodified rather than trap, as will
- *   attempts to seal with an invalid capability since it may have become
- *   unrepresentable but be within its reinterpreted bounds.
- */
-function clause execute (CCSeal(cd, cs1, cs2)) = {
-  let cs1_val = C(cs1);
-  let cs2_val = C(cs2);
-
-  let cs2_cursor = getCapCursor(cs2_val);
-  let (cs2_base, cs2_top) = getCapBounds(cs2_val);
-  let passthrough = not(cs2_val.tag)
-                  | isCapSealed(cs1_val)
-                  | (cs2_cursor < cs2_base)
-                  | (cs2_cursor >= cs2_top)
-                  | (signed(cs2_val.address) == otype_unsealed);
-  if passthrough then {
-    C(cd) = cs1_val;
-    RETIRE_SUCCESS
-  } else {
-    let permitted = not(isCapSealed(cs2_val))
-                  & cs2_val.permit_seal
-                  & (cs2_cursor <= cap_max_otype);
-    let newCap = sealCap(cs1_val, to_bits(cap_otype_width, cs2_cursor));
-    C(cd) = clearTagIf(newCap, not(permitted));
-    RETIRE_SUCCESS
-  }
-}
-
-union clause ast = CUnseal : (regidx, regidx, regidx)
-/*!
- * Capability register *cd* is replaced with capability register *cs1* and is
- * unsealed, using capability register *cs2* as the authority for the unsealing
- * operation. If *cs2*.**perms** does not grant **Global** then *cd*.**perms**
- * is stripped of **Global**. If *cs2* is unable to authorize the unsealing,
- * the **tag** field of *cd* is cleared.
- */
-function clause execute (CUnseal(cd, cs1, cs2)) = {
-  let cs1_val = C(cs1);
-  let cs2_val = C(cs2);
-  let cs2_cursor = getCapCursor(cs2_val);
-  let (cs2_base, cs2_top) = getCapBounds(cs2_val);
-  let permitted = cs2_val.tag
-                & isCapSealed(cs1_val)
-                & not(isCapSealed(cs2_val))
-                & not(hasReservedOType(cs1_val))
-                & (cs2_cursor == unsigned(cs1_val.otype))
-                & cs2_val.permit_unseal
-                & (cs2_cursor >= cs2_base)
-                & (cs2_cursor < cs2_top);
-  let new_global = cs1_val.global & cs2_val.global;
-  let newCap = {unsealCap(cs1_val) with global=new_global};
-  C(cd) = clearTagIf(newCap, not(permitted));
-  RETIRE_SUCCESS
-}
-
-union clause ast = CSealEntry : (regidx, regidx)
-/*!
- * Capability register *cd* is replaced with capability register *cs1* and
- * sealed as a sentry.
- */
-function clause execute (CSealEntry(cd, cs1)) = {
-  let cs1_val = C(cs1);
-  let inCap = clearTagIfSealed(cs1_val);
-  C(cd) = sealCap(inCap, to_bits(cap_otype_width, otype_sentry));
-  RETIRE_SUCCESS
-}
-
-union clause ast = CInvoke : (regidx, regidx)
-/*!
- * **PCC** is set equal to capability register *cs1* and unsealed with the 0th
- * bit of its **address** set to 0, whilst **C31** is set equal to capability
- * register *cs2* and unsealed. This provides a constrained form of
- * non-monotonicity, allowing for fast jumps between protection domains, with
- * *cs1* providing the target domain's code and *cs2* providing the target
- * domain's data. The capabilities must have a matching **otype** to ensure the
- * right data is provided for the given jump target.
- *
- * ## Exceptions
- *
- * An exception is raised if:
- *   - *cs1*.**tag** is not set.
- *   - *cs2*.**tag** is not set.
- *   - *cs1*.**otype** is reserved.
- *   - *cs2*.**otype** is reserved.
- *   - *cs1*.**otype** $\ne$ *cs2*.**otype**.
- *   - *cs1*.**perms** does not grant **Permit_CInvoke**.
- *   - *cs2*.**perms** does not grant **Permit_CInvoke**.
- *   - *cs1*.**perms** does not grant **Permit_Execute**.
- *   - *cs2*.**perms** grants **Permit_Execute**.
- *   - *cs1*.**address** $\lt$ *cs1*.**base**.
- *   - *cs1*.**address** $+$ min_instruction_bytes $\gt$ *cs1*.**top**.
- *   - *cs1*.**base** is unaligned (only possible if PCC relocation is enabled).
- *   - *cs1*.**address** is unaligned, ignoring bit 0.
- *
- * ## Notes
- *
- * - From the point of view of security, this needs to be an atomic operation
- *   (i.e. the caller cannot decide to just do some of it, because partial
- *   execution could put the system into an insecure state). From a hardware
- *   perspective, more complex domain-transition implementations (e.g., to
- *   implement function-call semantics or message passing) may need to perform
- *   multiple memory reads and writes, which might take multiple cycles and
- *   complicate control logic.
- */
-function clause execute (CInvoke(cs1, cs2)) = {
-  let cs1_val = C(cs1);
-  let cs2_val = C(cs2);
-  let newPC = [cs1_val.address with 0 = bitzero]; /* clear bit zero as for RISCV JALR */
-  let newPCCBase = getCapBaseBits(cs1_val);
-  if not(cs1_val.tag) then {
-    handle_cheri_reg_exception(CapEx_TagViolation, cs1);
-    RETIRE_FAIL
-  } else if not(cs2_val.tag) then {
-    handle_cheri_reg_exception(CapEx_TagViolation, cs2);
-    RETIRE_FAIL
-  } else if hasReservedOType(cs1_val) then {
-    handle_cheri_reg_exception(CapEx_SealViolation, cs1);
-    RETIRE_FAIL
-  } else if hasReservedOType(cs2_val) then {
-    handle_cheri_reg_exception(CapEx_SealViolation, cs2);
-    RETIRE_FAIL
-  } else if cs1_val.otype != cs2_val.otype then {
-    handle_cheri_reg_exception(CapEx_TypeViolation, cs1);
-    RETIRE_FAIL
-  } else if not(cs1_val.permit_cinvoke) then {
-    handle_cheri_reg_exception(CapEx_PermitCInvokeViolation, cs1);
-    RETIRE_FAIL
-  } else if not(cs2_val.permit_cinvoke) then {
-    handle_cheri_reg_exception(CapEx_PermitCInvokeViolation, cs2);
-    RETIRE_FAIL
-  } else if not(cs1_val.permit_execute) then {
-    handle_cheri_reg_exception(CapEx_PermitExecuteViolation, cs1);
-    RETIRE_FAIL
-  } else if cs2_val.permit_execute then {
-    handle_cheri_reg_exception(CapEx_PermitExecuteViolation, cs2);
-    RETIRE_FAIL
-  } else if have_pcc_relocation() & (newPCCBase[0] == bitone | (newPCCBase[1] == bitone & ~(haveRVC()))) then {
-    handle_cheri_reg_exception(CapEx_UnalignedBase, cs1);
-    RETIRE_FAIL
-  } else if newPC[1] == bitone & ~(haveRVC()) then {
-    handle_mem_exception(newPC,  E_Fetch_Addr_Align());
-    RETIRE_FAIL
-  } else if not(inCapBounds(cs1_val, newPC, min_instruction_bytes())) then {
-    handle_cheri_reg_exception(CapEx_LengthViolation, cs1);
-    RETIRE_FAIL
-  } else {
-    C(31) = unsealCap(cs2_val);
-    nextPC = newPC;
-    nextPCC = unsealCap(cs1_val);
-    RETIRE_SUCCESS
-  }
 }
 
 union clause ast = JALR_CAP : (regidx, regidx)
@@ -2122,12 +1821,9 @@ three-arg ones.
 
 /* Two arg */
 
-mapping clause encdec = CGetPerm(rd, cs1)   if (haveXcheri()) <-> 0b1111111 @ 0b00000 @ cs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri())
-mapping clause encdec = CGetType(rd, cs1)   if (haveXcheri()) <-> 0b1111111 @ 0b00001 @ cs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri())
 mapping clause encdec = CGetBase(rd, cs1)   if (haveXcheri()) <-> 0b1111111 @ 0b00010 @ cs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri())
 mapping clause encdec = CGetLen(rd, cs1)    if (haveXcheri()) <-> 0b1111111 @ 0b00011 @ cs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri())
 mapping clause encdec = CGetTag(rd, cs1)    if (haveXcheri()) <-> 0b1111111 @ 0b00100 @ cs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri())
-mapping clause encdec = CGetSealed(rd, cs1) if (haveXcheri()) <-> 0b1111111 @ 0b00101 @ cs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri())
 mapping clause encdec = CGetOffset(rd, cs1) if (haveXcheri()) <-> 0b1111111 @ 0b00110 @ cs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri())
 mapping clause encdec = CGetFlags(rd, cs1)  if (haveXcheri()) <-> 0b1111111 @ 0b00111 @ cs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri())
 mapping clause encdec = CGetAddr(rd, cs1)   if (haveXcheri()) <-> 0b1111111 @ 0b01111 @ cs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri())
@@ -2137,7 +1833,6 @@ mapping clause encdec = CGetTop(rd, cs1)    if (haveXcheri()) <-> 0b1111111 @ 0b
 mapping clause encdec = CMove(cd, cs1)      if (haveXcheri()) <-> 0b1111111 @ 0b01010 @ cs1 @ 0b000 @ cd @ 0b1011011 if (haveXcheri())
 mapping clause encdec = CClearTag(cd, cs1)  if (haveXcheri()) <-> 0b1111111 @ 0b01011 @ cs1 @ 0b000 @ cd @ 0b1011011 if (haveXcheri())
 mapping clause encdec = JALR_CAP(cd, cs1)   if (haveXcheri()) <-> 0b1111111 @ 0b01100 @ cs1 @ 0b000 @ cd @ 0b1011011 if (haveXcheri())
-mapping clause encdec = CSealEntry(cd, cs1) if (haveXcheri()) <-> 0b1111111 @ 0b10001 @ cs1 @ 0b000 @ cd @ 0b1011011 if (haveXcheri())
 mapping clause encdec = JALR_PCC(rd, rs1)   if (haveXcheri()) <-> 0b1111111 @ 0b10100 @ rs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri())
 
 mapping clause encdec = CLoadTags(rd, cs1) if (haveXcheri()) <-> 0b1111111 @ 0b10010 @ cs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri())
@@ -2148,13 +1843,10 @@ mapping clause encdec = CRAM(rd, rs1) if (haveXcheri()) <-> 0b1111111 @ 0b01001 
 mapping clause encdec = CClear(q, m3 @ m5)  if (haveXcheri()) <-> 0b1111111 @ 0b01110 @ q : bits(2) @ m3 : bits(3) @ 0b000 @ m5 : regidx @ 0b1011011 if (haveXcheri())
 mapping clause encdec = FPClear(q, m3 @ m5) if (haveXcheri()) <-> 0b1111111 @ 0b10000 @ q : bits(2) @ m3 : bits(3) @ 0b000 @ m5 : regidx @ 0b1011011 if (haveXcheri())
 
-mapping clause assembly = CGetPerm(rd, cs1)   <-> "cgetperm"   ^ spc() ^ reg_name(rd) ^ sep() ^ cap_reg_name(cs1)
 mapping clause assembly = CGetFlags(rd, cs1)  <-> "cgetflags"  ^ spc() ^ reg_name(rd) ^ sep() ^ cap_reg_name(cs1)
-mapping clause assembly = CGetType(rd, cs1)   <-> "cgettype"   ^ spc() ^ reg_name(rd) ^ sep() ^ cap_reg_name(cs1)
 mapping clause assembly = CGetBase(rd, cs1)   <-> "cgetbase"   ^ spc() ^ reg_name(rd) ^ sep() ^ cap_reg_name(cs1)
 mapping clause assembly = CGetLen(rd, cs1)    <-> "cgetlen"    ^ spc() ^ reg_name(rd) ^ sep() ^ cap_reg_name(cs1)
 mapping clause assembly = CGetTag(rd, cs1)    <-> "cgettag"    ^ spc() ^ reg_name(rd) ^ sep() ^ cap_reg_name(cs1)
-mapping clause assembly = CGetSealed(rd, cs1) <-> "cgetsealed" ^ spc() ^ reg_name(rd) ^ sep() ^ cap_reg_name(cs1)
 mapping clause assembly = CGetOffset(rd, cs1) <-> "cgetoffset" ^ spc() ^ reg_name(rd) ^ sep() ^ cap_reg_name(cs1)
 mapping clause assembly = CGetAddr(rd, cs1)   <-> "cgetaddr"   ^ spc() ^ reg_name(rd) ^ sep() ^ cap_reg_name(cs1)
 mapping clause assembly = CGetHigh(rd, cs1)   <-> "cgethigh"   ^ spc() ^ reg_name(rd) ^ sep() ^ cap_reg_name(cs1)
@@ -2164,7 +1856,6 @@ mapping clause assembly = CMove(cd, cs1)         <-> "cmove"      ^ spc() ^ cap_
 mapping clause assembly = CClearTag(cd, cs1)     <-> "ccleartag"  ^ spc() ^ cap_reg_name(cd) ^ sep() ^ cap_reg_name(cs1)
 mapping clause assembly = JALR_CAP(0b00000, cs1) <-> "jr.cap"     ^ spc() ^ cap_reg_name(cs1)
 mapping clause assembly = JALR_CAP(cd, cs1)      <-> "jalr.cap"   ^ spc() ^ cap_reg_name(cd) ^ sep() ^ cap_reg_name(cs1)
-mapping clause assembly = CSealEntry(cd, cs1)    <-> "csealentry" ^ spc() ^ cap_reg_name(cd) ^ sep() ^ cap_reg_name(cs1)
 mapping clause assembly = JALR_PCC(0b00000, rs1) <-> "jr.pcc"     ^ spc() ^ reg_name(rs1)
 mapping clause assembly = JALR_PCC(rd, rs1)      <-> "jalr.pcc"   ^ spc() ^ reg_name(rd) ^ sep() ^ reg_name(rs1)
 
@@ -2178,9 +1869,6 @@ mapping clause assembly = FPClear(q, m8) <-> "fpclear" ^ spc() ^ hex_bits_2(q) ^
 
 /* Three arg */
 
-mapping clause encdec = CSeal(cd, cs1, cs2)       if (haveXcheri()) <-> 0b0001011 @ cs2 @ cs1 @ 0b000 @ cd @ 0b1011011 if (haveXcheri())
-mapping clause encdec = CUnseal(cd, cs1, cs2)     if (haveXcheri()) <-> 0b0001100 @ cs2 @ cs1 @ 0b000 @ cd @ 0b1011011 if (haveXcheri())
-mapping clause encdec = CAndPerm(cd, cs1, rs2)    if (haveXcheri()) <-> 0b0001101 @ rs2 @ cs1 @ 0b000 @ cd @ 0b1011011 if (haveXcheri())
 mapping clause encdec = CSetFlags(cd, cs1, rs2)   if (haveXcheri()) <-> 0b0001110 @ rs2 @ cs1 @ 0b000 @ cd @ 0b1011011 if (haveXcheri())
 mapping clause encdec = CSetOffset(cd, cs1, rs2)  if (haveXcheri()) <-> 0b0001111 @ rs2 @ cs1 @ 0b000 @ cd @ 0b1011011 if (haveXcheri())
 mapping clause encdec = CSetAddr(cd, cs1, rs2)    if (haveXcheri()) <-> 0b0010000 @ rs2 @ cs1 @ 0b000 @ cd @ 0b1011011 if (haveXcheri())
@@ -2190,7 +1878,6 @@ mapping clause encdec = CSetBounds(cd, cs1, rs2)  if (haveXcheri()) <-> 0b000100
 mapping clause encdec = CSetBoundsExact(cd, cs1, rs2) if (haveXcheri()) <-> 0b0001001 @ rs2 @ cs1 @ 0b000 @ cd @ 0b1011011 if (haveXcheri())
 mapping clause encdec = CBuildCap(cd, cs1, cs2)   if (haveXcheri()) <-> 0b0011101 @ cs2 @ cs1 @ 0b000 @ cd @ 0b1011011 if (haveXcheri())
 mapping clause encdec = CCopyType(cd, cs1, cs2)   if (haveXcheri()) <-> 0b0011110 @ cs2 @ cs1 @ 0b000 @ cd @ 0b1011011 if (haveXcheri())
-mapping clause encdec = CCSeal(cd, cs1, cs2)      if (haveXcheri()) <-> 0b0011111 @ cs2 @ cs1 @ 0b000 @ cd @ 0b1011011 if (haveXcheri())
 
 mapping clause encdec = CToPtr(rd, cs1, cs2)      if (haveXcheri()) <-> 0b0010010 @ cs2 @ cs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri())
 mapping clause encdec = CFromPtr(cd, cs1, rs2)    if (haveXcheri()) <-> 0b0010011 @ rs2 @ cs1 @ 0b000 @ cd @ 0b1011011 if (haveXcheri())
@@ -2204,9 +1891,6 @@ mapping clause encdec = CSetBoundsImmediate(cd, cs1, imm12) if (haveXcheri()) <-
 
 mapping clause encdec = CSEQX(rd, cs1, cs2) if (haveXcheri()) <-> 0b0100001 @ cs2 @ cs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri())
 
-mapping clause assembly = CSeal(cd, cs1, cs2)      <-> "cseal"      ^ spc() ^ cap_reg_name(cd) ^ sep() ^ cap_reg_name(cs1) ^ sep() ^ cap_reg_name(cs2)
-mapping clause assembly = CUnseal(cd, cs1, cs2)    <-> "cunseal"    ^ spc() ^ cap_reg_name(cd) ^ sep() ^ cap_reg_name(cs1) ^ sep() ^ cap_reg_name(cs2)
-mapping clause assembly = CAndPerm(cd, cs1, rs2)   <-> "candperm"   ^ spc() ^ cap_reg_name(cd) ^ sep() ^ cap_reg_name(cs1) ^ sep() ^ reg_name(rs2)
 mapping clause assembly = CSetFlags(cd, cs1, rs2)  <-> "csetflags"  ^ spc() ^ cap_reg_name(cd) ^ sep() ^ cap_reg_name(cs1) ^ sep() ^ reg_name(rs2)
 mapping clause assembly = CSetOffset(cd, cs1, rs2) <-> "csetoffset" ^ spc() ^ cap_reg_name(cd) ^ sep() ^ cap_reg_name(cs1) ^ sep() ^ reg_name(rs2)
 mapping clause assembly = CSetAddr(cd, cs1, rs2)   <-> "csetaddr"   ^ spc() ^ cap_reg_name(cd) ^ sep() ^ cap_reg_name(cs1) ^ sep() ^ reg_name(rs2)
@@ -2216,7 +1900,6 @@ mapping clause assembly = CSetBounds(cd, cs1, rs2) <-> "csetbounds" ^ spc() ^ ca
 mapping clause assembly = CSetBoundsExact(cd, cs1, rs2) <-> "csetboundsexact" ^ spc() ^ cap_reg_name(cd) ^ sep() ^ cap_reg_name(cs1) ^ sep() ^ reg_name(rs2)
 mapping clause assembly = CBuildCap(cd, cs1, cs2) <-> "cbuildcap"   ^ spc() ^ cap_reg_name(cd) ^ sep() ^ cap_reg_name(cs1) ^ sep() ^ cap_reg_name(cs2)
 mapping clause assembly = CCopyType(cd, cs1, cs2) <-> "ccopytype"   ^ spc() ^ cap_reg_name(cd) ^ sep() ^ cap_reg_name(cs1) ^ sep() ^ cap_reg_name(cs2)
-mapping clause assembly = CCSeal(cd, cs1, cs2)    <-> "ccseal"      ^ spc() ^ cap_reg_name(cd) ^ sep() ^ cap_reg_name(cs1) ^ sep() ^ cap_reg_name(cs2)
 
 mapping clause assembly = CToPtr(rd, cs1, cs2)    <-> "ctoptr"      ^ spc() ^ reg_name(rd) ^ sep() ^ cap_reg_name(cs1) ^ sep() ^ cap_reg_name(cs2)
 mapping clause assembly = CFromPtr(cd, cs1, rs2)  <-> "cfromptr"    ^ spc() ^ cap_reg_name(cd) ^ sep() ^ cap_reg_name(cs1) ^ sep() ^ reg_name(rs2)
@@ -2239,70 +1922,70 @@ mapping clause assembly = CInvoke(cs1, cs2) <-> "cinvoke" ^ spc() ^ cap_reg_name
 
 /* Loads and stores */
 
-let haveRV128 = sizeof(xlen) >= 128
-let haveRV64  = sizeof(xlen) >= 64
+let haveRV64 = sizeof(xlen) >= 64
+let haveRV32  = sizeof(xlen) >= 32
 
 mapping clause encdec = LoadDataDDC(rd, rs1, false, BYTE)   if (haveXcheri()) <-> 0b1111101 @ 0b00000 @ rs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri())  /* lb.ddc */
 mapping clause encdec = LoadDataDDC(rd, rs1, false, HALF)   if (haveXcheri()) <-> 0b1111101 @ 0b00001 @ rs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri())  /* lh.ddc */
 mapping clause encdec = LoadDataDDC(rd, rs1, false, WORD)   if (haveXcheri()) <-> 0b1111101 @ 0b00010 @ rs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri())  /* lw.ddc */
-mapping clause encdec = LoadDataDDC(rd, rs1, false, DOUBLE) if (haveXcheri() & haveRV64) <-> 0b1111101 @ 0b00011 @ rs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri() & haveRV64) /* ld.ddc */
+mapping clause encdec = LoadDataDDC(rd, rs1, false, DOUBLE) if (haveXcheri() & haveRV32) <-> 0b1111101 @ 0b00011 @ rs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri() & haveRV32) /* ld.ddc */
 mapping clause encdec = LoadDataDDC(rd, rs1, true, BYTE)    if (haveXcheri()) <-> 0b1111101 @ 0b00100 @ rs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri())  /* lbu.ddc */
 mapping clause encdec = LoadDataDDC(rd, rs1, true, HALF)    if (haveXcheri()) <-> 0b1111101 @ 0b00101 @ rs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri())  /* lhu.ddc */
-mapping clause encdec = LoadDataDDC(rd, rs1, true, WORD)    if (haveXcheri() & haveRV64)  <-> 0b1111101 @ 0b00110 @ rs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri() & haveRV64)  /* lwu.ddc */
-mapping clause encdec = LoadDataDDC(rd, rs1, true, DOUBLE)  if (haveXcheri() & haveRV128) <-> 0b1111101 @ 0b00111 @ rs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri() & haveRV128) /* ldu.ddc */
+mapping clause encdec = LoadDataDDC(rd, rs1, true, WORD)    if (haveXcheri() & haveRV32)  <-> 0b1111101 @ 0b00110 @ rs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri() & haveRV32)  /* lwu.ddc */
+mapping clause encdec = LoadDataDDC(rd, rs1, true, DOUBLE)  if (haveXcheri() & haveRV64) <-> 0b1111101 @ 0b00111 @ rs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri() & haveRV64) /* ldu.ddc */
 mapping clause encdec = LoadCapDDC(cd, rs1)                 if (haveXcheri() & sizeof(xlen) == 64) <-> 0b1111101 @ 0b10111 @ rs1 @ 0b000 @ cd @ 0b1011011 if (haveXcheri() & sizeof(xlen) == 64)  /* lc.ddc */
 mapping clause encdec = LoadCapDDC(cd, rs1)                 if (haveXcheri() & sizeof(xlen) == 32) <-> 0b1111101 @ 0b00011 @ rs1 @ 0b000 @ cd @ 0b1011011 if (haveXcheri() & sizeof(xlen) == 32)  /* lc.ddc */
 
 mapping clause encdec = LoadDataCap(rd, cs1, false, BYTE)   if (haveXcheri()) <-> 0b1111101 @ 0b01000 @ cs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri())  /* lb.cap */
 mapping clause encdec = LoadDataCap(rd, cs1, false, HALF)   if (haveXcheri()) <-> 0b1111101 @ 0b01001 @ cs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri())  /* lh.cap */
 mapping clause encdec = LoadDataCap(rd, cs1, false, WORD)   if (haveXcheri()) <-> 0b1111101 @ 0b01010 @ cs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri())  /* lw.cap */
-mapping clause encdec = LoadDataCap(rd, cs1, false, DOUBLE) if (haveXcheri() & haveRV64) <-> 0b1111101 @ 0b01011 @ cs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri() & haveRV64)  /* ld.cap */
+mapping clause encdec = LoadDataCap(rd, cs1, false, DOUBLE) if (haveXcheri() & haveRV32) <-> 0b1111101 @ 0b01011 @ cs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri() & haveRV32)  /* ld.cap */
 mapping clause encdec = LoadDataCap(rd, cs1, true, BYTE)    if (haveXcheri()) <-> 0b1111101 @ 0b01100 @ cs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri())  /* lbu.cap */
 mapping clause encdec = LoadDataCap(rd, cs1, true, HALF)    if (haveXcheri()) <-> 0b1111101 @ 0b01101 @ cs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri())  /* lhu.cap */
-mapping clause encdec = LoadDataCap(rd, cs1, true, WORD)    if (haveXcheri() & haveRV64)  <-> 0b1111101 @ 0b01110 @ cs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri() & haveRV64)  /* lwu.cap */
-mapping clause encdec = LoadDataCap(rd, cs1, true, DOUBLE)  if (haveXcheri() & haveRV128) <-> 0b1111101 @ 0b01111 @ cs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri() & haveRV128) /* ldu.cap */
+mapping clause encdec = LoadDataCap(rd, cs1, true, WORD)    if (haveXcheri() & haveRV32)  <-> 0b1111101 @ 0b01110 @ cs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri() & haveRV32)  /* lwu.cap */
+mapping clause encdec = LoadDataCap(rd, cs1, true, DOUBLE)  if (haveXcheri() & haveRV64) <-> 0b1111101 @ 0b01111 @ cs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri() & haveRV64) /* ldu.cap */
 mapping clause encdec = LoadCapCap(cd, cs1)                 if (haveXcheri() & sizeof(xlen) == 64) <-> 0b1111101 @ 0b11111 @ cs1 @ 0b000 @ cd @ 0b1011011 if (haveXcheri() & sizeof(xlen) == 64)  /* lc.cap */
 mapping clause encdec = LoadCapCap(cd, cs1)                 if (haveXcheri() & sizeof(xlen) == 32) <-> 0b1111101 @ 0b01011 @ cs1 @ 0b000 @ cd @ 0b1011011 if (haveXcheri() & sizeof(xlen) == 32)  /* lc.cap */
 
 mapping clause encdec = LoadResDataDDC(rd, rs1, BYTE)   if (haveXcheri() & haveAtomics()) <-> 0b1111101 @ 0b10000 @ rs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri() & haveAtomics())  /* lr.b.ddc */
 mapping clause encdec = LoadResDataDDC(rd, rs1, HALF)   if (haveXcheri() & haveAtomics()) <-> 0b1111101 @ 0b10001 @ rs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri() & haveAtomics())  /* lr.h.ddc */
 mapping clause encdec = LoadResDataDDC(rd, rs1, WORD)   if (haveXcheri() & haveAtomics()) <-> 0b1111101 @ 0b10010 @ rs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri() & haveAtomics())  /* lr.w.ddc */
-mapping clause encdec = LoadResDataDDC(rd, rs1, DOUBLE) if (haveXcheri() & haveAtomics() & haveRV64) <-> 0b1111101 @ 0b10011 @ rs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri() & haveAtomics() & haveRV64)  /* lr.d.ddc */
+mapping clause encdec = LoadResDataDDC(rd, rs1, DOUBLE) if (haveXcheri() & haveAtomics() & haveRV32) <-> 0b1111101 @ 0b10011 @ rs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri() & haveAtomics() & haveRV32)  /* lr.d.ddc */
 mapping clause encdec = LoadResCapDDC(cd, rs1)          if (haveXcheri() & haveAtomics() & sizeof(xlen) == 32) <-> 0b1111101 @ 0b10011 @ rs1 @ 0b000 @ cd @ 0b1011011 if (haveXcheri() & haveAtomics() & sizeof(xlen) == 32)  /* lr.c.ddc */
 mapping clause encdec = LoadResCapDDC(cd, rs1)          if (haveXcheri() & haveAtomics() & sizeof(xlen) == 64) <-> 0b1111101 @ 0b10100 @ rs1 @ 0b000 @ cd @ 0b1011011 if (haveXcheri() & haveAtomics() & sizeof(xlen) == 64)  /* lr.c.ddc */
 
 mapping clause encdec = LoadResCap(rd, cs1, BYTE)   if (haveXcheri() & haveAtomics()) <-> 0b1111101 @ 0b11000 @ cs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri() & haveAtomics())  /* lr.b.cap */
 mapping clause encdec = LoadResCap(rd, cs1, HALF)   if (haveXcheri() & haveAtomics()) <-> 0b1111101 @ 0b11001 @ cs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri() & haveAtomics())  /* lr.h.cap */
 mapping clause encdec = LoadResCap(rd, cs1, WORD)   if (haveXcheri() & haveAtomics()) <-> 0b1111101 @ 0b11010 @ cs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri() & haveAtomics())  /* lr.w.cap */
-mapping clause encdec = LoadResCap(rd, cs1, DOUBLE) if (haveXcheri() & haveAtomics() & haveRV64) <-> 0b1111101 @ 0b11011 @ cs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri() & haveAtomics() & haveRV64)  /* lr.d.cap */
+mapping clause encdec = LoadResCap(rd, cs1, DOUBLE) if (haveXcheri() & haveAtomics() & haveRV32) <-> 0b1111101 @ 0b11011 @ cs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri() & haveAtomics() & haveRV32)  /* lr.d.cap */
 mapping clause encdec = LoadResCapCap(cd, cs1)      if (haveXcheri() & haveAtomics() & sizeof(xlen) == 32) <-> 0b1111101 @ 0b11011 @ cs1 @ 0b000 @ cd @ 0b1011011 if (haveXcheri() & haveAtomics() & sizeof(xlen) == 32)  /* lr.c.cap */
 mapping clause encdec = LoadResCapCap(cd, cs1)      if (haveXcheri() & haveAtomics() & sizeof(xlen) == 64) <-> 0b1111101 @ 0b11100 @ cs1 @ 0b000 @ cd @ 0b1011011 if (haveXcheri() & haveAtomics() & sizeof(xlen) == 64)  /* lr.c.cap */
 
 mapping clause encdec = StoreDataDDC(rs2, rs1, BYTE)   if (haveXcheri()) <-> 0b1111100 @ rs2 @ rs1 @ 0b000 @ 0b00000 @ 0b1011011 if (haveXcheri()) /* sb.ddc */
 mapping clause encdec = StoreDataDDC(rs2, rs1, HALF)   if (haveXcheri()) <-> 0b1111100 @ rs2 @ rs1 @ 0b000 @ 0b00001 @ 0b1011011 if (haveXcheri()) /* sh.ddc */
 mapping clause encdec = StoreDataDDC(rs2, rs1, WORD)   if (haveXcheri()) <-> 0b1111100 @ rs2 @ rs1 @ 0b000 @ 0b00010 @ 0b1011011 if (haveXcheri()) /* sw.ddc */
-mapping clause encdec = StoreDataDDC(rs2, rs1, DOUBLE) if (haveXcheri() & haveRV64) <-> 0b1111100 @ rs2 @ rs1 @ 0b000 @ 0b00011 @ 0b1011011 if (haveXcheri() & haveRV64) /* sd.ddc */
+mapping clause encdec = StoreDataDDC(rs2, rs1, DOUBLE) if (haveXcheri() & haveRV32) <-> 0b1111100 @ rs2 @ rs1 @ 0b000 @ 0b00011 @ 0b1011011 if (haveXcheri() & haveRV32) /* sd.ddc */
 mapping clause encdec = StoreCapDDC(cs2, rs1)          if (haveXcheri() & sizeof(xlen) == 64) <-> 0b1111100 @ cs2 @ rs1 @ 0b000 @ 0b00100 @ 0b1011011 if (haveXcheri() & sizeof(xlen) == 64) /* sc.ddc */
 mapping clause encdec = StoreCapDDC(cs2, rs1)          if (haveXcheri() & sizeof(xlen) == 32) <-> 0b1111100 @ cs2 @ rs1 @ 0b000 @ 0b00011 @ 0b1011011 if (haveXcheri() & sizeof(xlen) == 32) /* sc.ddc */
 
 mapping clause encdec = StoreDataCap(rs2, cs1, BYTE)    if (haveXcheri()) <-> 0b1111100 @ rs2 @ cs1 @ 0b000 @ 0b01000 @ 0b1011011 if (haveXcheri()) /* sb.cap */
 mapping clause encdec = StoreDataCap(rs2, cs1, HALF)    if (haveXcheri()) <-> 0b1111100 @ rs2 @ cs1 @ 0b000 @ 0b01001 @ 0b1011011 if (haveXcheri()) /* sh.cap */
 mapping clause encdec = StoreDataCap(rs2, cs1, WORD)    if (haveXcheri()) <-> 0b1111100 @ rs2 @ cs1 @ 0b000 @ 0b01010 @ 0b1011011 if (haveXcheri()) /* sw.cap */
-mapping clause encdec = StoreDataCap(rs2, cs1, DOUBLE)  if (haveXcheri() & haveRV64) <-> 0b1111100 @ rs2 @ cs1 @ 0b000 @ 0b01011 @ 0b1011011 if (haveXcheri() & haveRV64) /* sd.cap */
+mapping clause encdec = StoreDataCap(rs2, cs1, DOUBLE)  if (haveXcheri() & haveRV32) <-> 0b1111100 @ rs2 @ cs1 @ 0b000 @ 0b01011 @ 0b1011011 if (haveXcheri() & haveRV32) /* sd.cap */
 mapping clause encdec = StoreCapCap(cs2, cs1)           if (haveXcheri() & sizeof(xlen) == 64) <-> 0b1111100 @ cs2 @ cs1 @ 0b000 @ 0b01100 @ 0b1011011 if (haveXcheri() & sizeof(xlen) == 64) /* sc.cap */
 mapping clause encdec = StoreCapCap(cs2, cs1)           if (haveXcheri() & sizeof(xlen) == 32) <-> 0b1111100 @ cs2 @ cs1 @ 0b000 @ 0b01011 @ 0b1011011 if (haveXcheri() & sizeof(xlen) == 32) /* sc.cap */
 
 mapping clause encdec = StoreCondDataDDC(rs2, rs1, BYTE)   if (haveXcheri() & haveAtomics()) <-> 0b1111100 @ rs2 @ rs1 @ 0b000 @ 0b10000 @ 0b1011011 if (haveXcheri() & haveAtomics()) /* sc.b.ddc */
 mapping clause encdec = StoreCondDataDDC(rs2, rs1, HALF)   if (haveXcheri() & haveAtomics()) <-> 0b1111100 @ rs2 @ rs1 @ 0b000 @ 0b10001 @ 0b1011011 if (haveXcheri() & haveAtomics()) /* sc.h.ddc */
 mapping clause encdec = StoreCondDataDDC(rs2, rs1, WORD)   if (haveXcheri() & haveAtomics()) <-> 0b1111100 @ rs2 @ rs1 @ 0b000 @ 0b10010 @ 0b1011011 if (haveXcheri() & haveAtomics()) /* sc.w.ddc */
-mapping clause encdec = StoreCondDataDDC(rs2, rs1, DOUBLE) if (haveXcheri() & haveAtomics() & haveRV64) <-> 0b1111100 @ rs2 @ rs1 @ 0b000 @ 0b10011 @ 0b1011011 if (haveXcheri() & haveAtomics() & haveRV64) /* sc.d.ddc */
+mapping clause encdec = StoreCondDataDDC(rs2, rs1, DOUBLE) if (haveXcheri() & haveAtomics() & haveRV32) <-> 0b1111100 @ rs2 @ rs1 @ 0b000 @ 0b10011 @ 0b1011011 if (haveXcheri() & haveAtomics() & haveRV32) /* sc.d.ddc */
 mapping clause encdec = StoreCondCapDDC(cs2, rs1)          if (haveXcheri() & haveAtomics() & sizeof(xlen) == 32) <-> 0b1111100 @ cs2 @ rs1 @ 0b000 @ 0b10011 @ 0b1011011 if (haveXcheri() & haveAtomics() & sizeof(xlen) == 32) /* sc.c.ddc */
 mapping clause encdec = StoreCondCapDDC(cs2, rs1)          if (haveXcheri() & haveAtomics() & sizeof(xlen) == 64) <-> 0b1111100 @ cs2 @ rs1 @ 0b000 @ 0b10100 @ 0b1011011 if (haveXcheri() & haveAtomics() & sizeof(xlen) == 64) /* sc.c.ddc */
 
 mapping clause encdec = StoreCondCap(rs2, cs1, BYTE)   if (haveXcheri() & haveAtomics()) <-> 0b1111100 @ rs2 @ cs1 @ 0b000 @ 0b11000 @ 0b1011011 if (haveXcheri() & haveAtomics()) /* sc.b.cap */
 mapping clause encdec = StoreCondCap(rs2, cs1, HALF)   if (haveXcheri() & haveAtomics()) <-> 0b1111100 @ rs2 @ cs1 @ 0b000 @ 0b11001 @ 0b1011011 if (haveXcheri() & haveAtomics()) /* sc.h.cap */
 mapping clause encdec = StoreCondCap(rs2, cs1, WORD)   if (haveXcheri() & haveAtomics()) <-> 0b1111100 @ rs2 @ cs1 @ 0b000 @ 0b11010 @ 0b1011011 if (haveXcheri() & haveAtomics()) /* sc.w.cap */
-mapping clause encdec = StoreCondCap(rs2, cs1, DOUBLE) if (haveXcheri() & haveAtomics() & haveRV64) <-> 0b1111100 @ rs2 @ cs1 @ 0b000 @ 0b11011 @ 0b1011011 if (haveXcheri()  & haveAtomics()& haveRV64) /* sc.d.cap */
+mapping clause encdec = StoreCondCap(rs2, cs1, DOUBLE) if (haveXcheri() & haveAtomics() & haveRV32) <-> 0b1111100 @ rs2 @ cs1 @ 0b000 @ 0b11011 @ 0b1011011 if (haveXcheri()  & haveAtomics()& haveRV32) /* sc.d.cap */
 mapping clause encdec = StoreCondCapCap(cs2, cs1)      if (haveXcheri() & haveAtomics() & sizeof(xlen) == 32) <-> 0b1111100 @ cs2 @ cs1 @ 0b000 @ 0b11011 @ 0b1011011 if (haveXcheri() & haveAtomics() & sizeof(xlen) == 32) /* sc.c.cap */
 mapping clause encdec = StoreCondCapCap(cs2, cs1)      if (haveXcheri() & haveAtomics() & sizeof(xlen) == 64) <-> 0b1111100 @ cs2 @ cs1 @ 0b000 @ 0b11100 @ 0b1011011 if (haveXcheri() & haveAtomics() & sizeof(xlen) == 64) /* sc.c.cap */
 
