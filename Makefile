@@ -12,10 +12,10 @@ SAIL_RISCV_MODEL_DIR=$(SAIL_RISCV_DIR)/model
 SAIL_CHERI_MODEL_DIR=src
 
 SAIL_RV32_XLEN := $(SAIL_RISCV_MODEL_DIR)/riscv_xlen32.sail
-CHERI_CAP_RV32_IMPL := cheri_prelude_64.sail
+CHERI_CAP_RV32_IMPL := cheri_prelude_32.sail
 
 SAIL_RV64_XLEN := $(SAIL_RISCV_MODEL_DIR)/riscv_xlen64.sail
-CHERI_CAP_RV64_IMPL := cheri_prelude_128.sail
+CHERI_CAP_RV64_IMPL := cheri_prelude_64.sail
 
 SAIL_XLEN = $(SAIL_$(ARCH)_XLEN)
 SAIL_FLEN = $(SAIL_RISCV_MODEL_DIR)/riscv_flen_D.sail

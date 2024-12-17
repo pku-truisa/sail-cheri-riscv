@@ -60,6 +60,18 @@
 /*  SUCH DAMAGE.                                                                         */
 /*=======================================================================================*/
 
+/*=======================================================================================*/
+/*  CHERI RISCV Sail Model (Truisa Version)                                              */
+/*                                                                                       */
+/*  This CHERI Sail RISC-V architecture model here, comprising all files and             */
+/*  directories except for the snapshots of the Lem and Sail libraries in the            */
+/*  prover_snapshots directory (which include copies of their licenses), is subject      */
+/*  to the BSD two-clause licence below.                                                 */
+/*                                                                                       */
+/*  Copyright (c) 2024-2025                                                              */
+/*    Dong Tong, Peking University                                                       */
+/*=======================================================================================*/
+
 let cap_max_addr = MAX(cap_addr_width)
 
 type CapAddrBits  = bits(cap_addr_width)
@@ -68,14 +80,11 @@ type CapLenBits   = bits(cap_len_width)
 type CapLen       = range(0, (2 ^ cap_len_width))
 type CapFlagsBits = bits(cap_flags_width)
 
-/* Reset E and T calculated to make top 2**xlen. */
-let cap_max_E   = cap_len_width + 1
+/* Reset E */
+let cap_max_E   = cap_len_width - 1;
 let cap_reset_E = to_bits(cap_E_width, cap_max_E)
 
-/*! A partially decompressed version of a capability -- E, B, T,
- * lenMSB, sealed and otype fields are not present in all formats and are
- * populated by capBitsToCapability.
- */
+/*! A partially decompressed version of a capability */
 struct Capability = {
   tag                    : bool,
   flag_cap_mode          : bool,
@@ -97,7 +106,7 @@ let default_cap : Capability = struct {
   address                = zeros()
 }
 
-/* Convert from capability bits (128 bits with tag) to a more convenient struct. */
+/* Convert from capability bits (64 bits with tag) to a more convenient struct. */
 function encCapabilityToCapability(t,c) : (bool, EncCapability) -> Capability = {
   return struct {
     tag                    = t,
@@ -122,7 +131,7 @@ function capToBits(cap) : Capability -> CapBits = encCapToBits(capToEncCap(cap))
 
 /* When saving/restoring capabilities xor them with bits of null_cap --
  * this ensures that canonical null_cap is always all-zeros in memory
- * even though it may have bits set logically (e.g. length or exponent
+ * even though it may have bits set logically (e.g. length or exponent )
  */
 
 let null_cap_bits : CapBits = capToBits(null_cap)
@@ -133,29 +142,32 @@ function capToMemBits(cap) : Capability -> CapBits =
 function memBitsToCapability(tag, b) : (bool, CapBits) -> Capability =
   capBitsToCapability(tag, b ^ null_cap_bits)
 
+/* In Truisa, all capability length is 2^E.
+ * The base is the first address, and the limit is the last byte address. 
+ */
 function getCapBoundsBits(c) : Capability -> (CapAddrBits, CapLenBits) =
   let E = min(cap_max_E, unsigned(c.E)) in
-  top = base + pow2(E) - 1;
-  (base[(cap_addr_width - 1)..0], top)
+  let a : CapAddrBits = c.address in
+  let a_top = (a >> E) in {
+    base : CapLenBits = truncate( a_top      @ zeros(E), cap_len_width);
+    top  : CapLenBits = truncate((a_top + 1) @ zeros(E), cap_len_width);
+  
+  (base[(cap_addr_width - 1)..0], top) 
   }
 
-function getCapBounds(cap) : Capability -> (CapAddrInt, CapLen) =
+function getCapBounds(cap) : Capability -> (CapAddrInt, CapLenInt) =
   let (base, top) = getCapBoundsBits(cap) in
   (unsigned(base), unsigned(top))
 
-/* An 'ideal' version of setCapBounds as described in paper. */
+/* A version of setCapBounds. */
 function setCapBounds(cap, base, top) : (Capability, CapAddrBits, CapLenBits) -> (bool, Capability) = {
   /* {cap with base=base; length=(bits(64)) length; offset=0} */
   let ext_base = 0b0 @ base;
   let length = top - ext_base;
-  /* Find an exponent that will put the most significant bit of length
-   * second from the top as assumed during decoding. We ignore the bottom
-   * MW bits because those are handled by the ie = 0 format.
-   */
-  let e = cap_max_E - count_leading_zeros(length[cap_addr_width..0]); // No mantissa
+  let e = cap_max_E - count_leading_zeros(length[cap_len_width-1..0]);
 
-  let newCap = {cap with address=base, E=to_bits(6, e)};
-  let exact = not(lostSignificantBase | lostSignificantTop);
+  let newCap = {cap with address=base, E=to_bits(cap_E_width, e)};
+  let exact = ture;
   (exact, newCap)
 }
 
@@ -236,13 +248,13 @@ function setCapAddr(c, addr) =
 
 function setCapAddrChecked(c, addr) : (Capability, CapAddrBits) -> Capability =
     let (representable, newCap) = setCapAddr(c, addr) in
-    clearTagIf(newCap, not(representable) | isCapSealed(c))
+    clearTagIf(newCap, not(representable))
 
 infix 1 >>_s
 overload operator >> = {sail_shiftright}
 overload operator << = {sail_shiftleft}
 overload operator >>_s = {sail_arith_shiftright}
-
+/*
 function fastRepCheck(c, i) : (Capability, CapAddrBits) -> bool=
     let E = unsigned(c.E) in
     if (E >= cap_max_E - 2) then
@@ -267,24 +279,24 @@ function fastRepCheck(c, i) : (Capability, CapAddrBits) -> bool=
           (i_mid >=_u diff) & (R != a_mid)
         else
           false
-
+*/
 function setCapOffset(c, offset) : (Capability, CapAddrBits) -> (bool, Capability) =
     let base = getCapBaseBits(c) in
     let newAddress = base + offset in
     let newCap     = { c with address = newAddress } in
-    /* let representable = capBoundsEqual(c, newCap) in */
-    let representable = fastRepCheck(c, (newAddress - c.address)) in
+    let representable = capBoundsEqual(c, newCap) in
+    /* let representable = fastRepCheck(c, (newAddress - c.address)) in */
     (representable, newCap)
 
 function setCapOffsetChecked (cap, offset) : (Capability, CapAddrBits) -> Capability =
     let (representable, newCap) = setCapOffset(cap, offset) in
-    clearTagIf(newCap, not(representable) | isCapSealed(cap))
+    clearTagIf(newCap, not(representable))
 
 function incCapOffset(c, delta) : (Capability, CapAddrBits) -> (bool, Capability) =
     let newAddress : CapAddrBits = c.address + delta in
     let newCap     = { c with address = newAddress } in
-    /* let representable = capBoundsEqual(c, newCap) in */
-    let representable = fastRepCheck(c, delta) in
+    let representable = capBoundsEqual(c, newCap) in
+    /* let representable = fastRepCheck(c, delta) in */
     (representable, newCap)
 
 
@@ -292,7 +304,6 @@ val capToString : (Capability) -> string effect {escape}
 function capToString (cap) = {
   let len = getCapLength(cap);
   let len_str = BitStr(to_bits(cap_len_width + 3, len));
-  /* Print architectural type which is -1 for unsealed caps */
   concat_str(" t:",
   concat_str(if cap.tag then "1" else "0",
   concat_str(" address:",

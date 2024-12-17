@@ -78,12 +78,11 @@ let  cap_size = sizeof(cap_size)
 type log2_cap_size : Int = 3
 let  log2_cap_size = sizeof(log2_cap_size)
 type CapBits = bits(8 * cap_size)
-/* width of otype field in bits */
 type cap_flags_width : Int = 1
 let  cap_flags_width = sizeof(cap_flags_width)
 type cap_E_width : Int = 6
 let  cap_E_width = sizeof(cap_E_width)
-type cap_addr_width : Int = xlen - 7
+type cap_addr_width : Int = 57
 let  cap_addr_width = sizeof(cap_addr_width)
 type cap_len_width : Int = cap_addr_width + 1
 let  cap_len_width = sizeof(cap_len_width)
@@ -95,17 +94,17 @@ let  caps_per_cache_line = sizeof(caps_per_cache_line)
 /* Capability format completely compressed. Tag is out of band */
 struct EncCapability = {
   flags      : bits(cap_flags_width),
-  E          : bit,
+  E          : bits(cap_E_width),
   address    : bits(cap_addr_width)
 }
 
 function capBitsToEncCapability(c) : CapBits -> EncCapability = struct {
   flags      = c[63..63],
-  internal_E = c[62-58],
-  address    = c[57..0]
+  E          = c[62..57],
+  address    = c[56..0]
 }
 
 function encCapToBits(cap) : EncCapability -> CapBits =
   cap.flags @
-  E @
+  cap.E @
   cap.address

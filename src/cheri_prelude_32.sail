@@ -80,30 +80,28 @@ let  log2_cap_size = sizeof(log2_cap_size)
 type CapBits = bits(8 * cap_size)
 type cap_flags_width : Int = 1
 let  cap_flags_width = sizeof(cap_flags_width)
-//type cap_mantissa_width : Int = 1 /* In Truisa, this value has no means, just for function
-//let  cap_mantissa_width = sizeof(cap_mantissa_width)
 type cap_E_width : Int = 5
 let  cap_E_width = sizeof(cap_E_width)
-type cap_addr_width : Int = xlen - 6
+type cap_addr_width : Int = 26
 let  cap_addr_width = sizeof(cap_addr_width)
 type cap_len_width : Int = cap_addr_width + 1
 let  cap_len_width = sizeof(cap_len_width)
 
 /* For CLoadTags and CClearTags, which operate at cache line granularity */
-type caps_per_cache_line : Int = 16
-let  caps_per_cache_line = sizeof(caps_per_cache_line
+type caps_per_cache_line : Int = 8
+let  caps_per_cache_line = sizeof(caps_per_cache_line)
 
 /* Capability format completely compressed. Tag is out of band */
 struct EncCapability = {
   flags      : bits(cap_flags_width),
-  E          : bit,
+  E          : bits(cap_E_width),
   address    : bits(cap_addr_width)
 }
 
 function capBitsToEncCapability(c) : CapBits -> EncCapability = struct {
   flags      = c[31..31],
-  E          = c[30..27],
-  address    = c[26..0]
+  E          = c[30..26],
+  address    = c[25..0]
 }
 
 function encCapToBits(cap) : EncCapability -> CapBits =
