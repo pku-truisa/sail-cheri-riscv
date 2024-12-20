@@ -60,6 +60,18 @@
 /*  SUCH DAMAGE.                                                                         */
 /*=======================================================================================*/
 
+/*=======================================================================================*/
+/*  CHERI RISCV Sail Model (Truisa Version)                                              */
+/*                                                                                       */
+/*  This CHERI Sail RISC-V architecture model here, comprising all files and             */
+/*  directories except for the snapshots of the Lem and Sail libraries in the            */
+/*  prover_snapshots directory (which include copies of their licenses), is subject      */
+/*  to the BSD two-clause licence below.                                                 */
+/*                                                                                       */
+/*  Copyright (c) 2024-2025                                                              */
+/*    Dong Tong, Peking University                                                       */
+/*=======================================================================================*/
+
 /* Capability versions of mode-dependent instructions */
 
 union clause ast = AUIPCC : (bits(20), regidx)
@@ -76,8 +88,7 @@ function clause execute AUIPCC(imm, cd) = {
 
 union clause ast = CJAL : (bits(21), regidx)
 /*!
- * Capability register *cd* is replaced with the next instruction's **PCC** and
- * sealed as a sentry. **PCC**.**address** is incremented by *imm*.
+ * Capability register *cd* is replaced with the next instruction's **PCC**
  *
  * ## Exceptions
  *
@@ -98,8 +109,7 @@ function clause execute(CJAL(imm, cd)) = {
   } else {
     let (success, linkCap) = setCapAddr(PCC, nextPC); /* Note that nextPC accounts for compressed instructions */
     assert(success, "Link cap should always be representable.");
-    assert(not(isCapSealed(linkCap)), "Link cap should always be unsealed");
-    C(cd) = sealCap(linkCap, to_bits(cap_otype_width, otype_sentry));
+    C(cd) = linkCap;
     nextPC = newPC;
     RETIRE_SUCCESS
   }
@@ -107,18 +117,15 @@ function clause execute(CJAL(imm, cd)) = {
 
 union clause ast = CJALR : (bits(12), regidx, regidx)
 /*!
- * Capability register *cd* is replaced with the next instruction's **PCC** and
- * sealed as a sentry. **PCC** is replaced with the value of capability
+ * Capability register *cd* is replaced with the next instruction's **PCC**. 
+ * **PCC** is replaced with the value of capability
  * register *cs1* with its **address** incremented by *imm* and the 0th bit of
- * its **address** set to 0, and is unsealed if it is a sentry.
+ * its **address** set to 0.
  *
  * ## Exceptions
  *
  * An exception is raised if:
  *   - *cs1*.**tag** is not set.
- *   - *cs1* is sealed and is not a sentry.
- *   - *cs1* is a sentry and *imm* $\ne$ 0.
- *   - *cs1*.**perms** does not grant **Permit_Execute**.
  *   - *cs1*.**address** $+$ *imm* $\lt$ *cs1*.**base**.
  *   - *cs1*.**address** $+$ *imm* $+$ min_instruction_bytes $\gt$ *cs1*.**top**.
  *   - *cs1*.**base** is unaligned (only possible if PCC relocation is enabled).
@@ -132,13 +139,6 @@ function clause execute(CJALR(imm, cs1, cd)) = {
   if not(cs1_val.tag) then {
     handle_cheri_reg_exception(CapEx_TagViolation, cs1);
     RETIRE_FAIL
-  } else if isCapSealed(cs1_val) &
-            ((signed(cs1_val.otype) != otype_sentry) | imm != zeros()) then {
-    handle_cheri_reg_exception(CapEx_SealViolation, cs1);
-    RETIRE_FAIL
-  } else if not(cs1_val.permit_execute) then {
-    handle_cheri_reg_exception(CapEx_PermitExecuteViolation, cs1);
-    RETIRE_FAIL
   } else if have_pcc_relocation() & (newPCCBase[0] == bitone | (newPCCBase[1] == bitone & ~(haveRVC()))) then {
     handle_cheri_reg_exception(CapEx_UnalignedBase, cs1);
     RETIRE_FAIL
@@ -151,10 +151,9 @@ function clause execute(CJALR(imm, cs1, cd)) = {
   } else {
     let (success, linkCap) = setCapAddr(PCC, nextPC); /* Note that nextPC accounts for compressed instructions */
     assert(success, "Link cap should always be representable.");
-    assert(not(isCapSealed(linkCap)), "Link cap should always be unsealed");
-    C(cd) = sealCap(linkCap, to_bits(cap_otype_width, otype_sentry));
+    C(cd) = linkCap;
     nextPC = newPC;
-    nextPCC = unsealCap(cs1_val);
+    nextPCC = cs1_val;
     RETIRE_SUCCESS
   }
 }
@@ -202,20 +201,12 @@ function clause execute (CGetOffset(rd, cs1)) = {
 }
 
 /*!
- * Integer register *rd* is set equal to the **high half** of capability
+ * Integer register *rd* is set equal to the **high** of capability
  * register *cs1*.
- *
- * The bits returned here are of the **in-memory** form of the capability, which
- * may differ from microarchitectural forms in use within implementations.
- * (Notably, in the sail implementation, see the distinction between [capToBits]
- * and [capToMemBits].)  That is, applying [CGetHigh] to a capability loaded
- * from address *m* will yield the same result as loading the high half of the
- * capability-sized granule at *m* (that is, bits above **XLEN** when a
- * capability is interpreted as a twice-**XLEN**-bit integer).
  */
 function clause execute (CGetHigh(rd, cs1)) = {
   let capVal : Capability = C(cs1);
-  X(rd) = capToMemBits(capVal)[sizeof(xlen) * 2 - 1 .. sizeof(xlen)];
+  X(rd) = zero_extend(capToMemBits(capVal)[sizeof(xlen) - 1 .. sizeof(cap_addr_width)]);
   RETIRE_SUCCESS
 }
 
@@ -234,8 +225,9 @@ union clause ast = CSetHigh : (regidx, regidx, regidx)
 function clause execute (CSetHigh(cd, cs1, rs2)) = {
   let capVal = C(cs1);
   let intVal = X(rs2);
-  let capLow : xlenbits = capToMemBits(capVal)[sizeof(xlen) - 1 .. 0];
-  let newCap : Capability = memBitsToCapability(false, intVal @ capLow);
+  let capLow : cap_addr_width = capToMemBits(capVal)[sizeof(cap_addr_width) - 1 .. 0];
+  let capHigh : cap_high_width = IntVal[cap_high_width=1 .. 0];
+  let newCap : Capability = memBitsToCapability(false, capHigh @ capLow);
   C(cd) = newCap;
   RETIRE_SUCCESS
 }
@@ -395,32 +387,11 @@ function clause execute (CSpecialRW(cd, scr, cs1)) = {
   }
 }
 
-union clause ast = CSetFlags : (regidx, regidx, regidx)
-/*!
- * Capability register *cd* is replaced with the contents of capability
- * register *cs1* with the **flags** field set to bits 0 to [cap_flags_width]-1
- * of integer register *rs2*. If *cs1* was sealed then *cd*.**tag** is cleared.
- */
-function clause execute(CSetFlags(cd, cs1, rs2)) = {
-  let cs1_val = C(cs1);
-  let rs2_val = X(rs2);
-
-  let inCap = clearTagIfSealed(cs1_val);
-  let newCap = setCapFlags(inCap, truncate(rs2_val, cap_flags_width));
-
-  C(cd) = newCap;
-  RETIRE_SUCCESS
-}
-
 union clause ast = CToPtr : (regidx, regidx, regidx)
 /*!
  * If the **tag** field of capability register *cs1* is not set, integer
  * register *rd* is set to 0, otherwise integer register *rd* is set to
  * *cs1*.**address** $-$ *cs2*.**base**.
- *
- * ## Notes
- *
- * - *cs2* being sealed will not set *rd* to 0. This is for further study.
  */
 function clause execute(CToPtr(rd, cs1, cs2)) = {
   let cs2_val = if unsigned(cs2) == 0 then DDC else C(cs2);
@@ -451,8 +422,8 @@ union clause ast = CIncOffset : (regidx, regidx, regidx)
 /*!
  * Capability register *cd* is set equal to capability register *cs1* with its
  * **address** replaced with *cs1*.**address** $+$ *rs2*.
- * If the resulting capability cannot be represented exactly, or if *cs1* was
- * sealed, then *cd*.**tag** is cleared. The remaining capability fields are
+ * If the resulting capability cannot be represented exactly, 
+ * The remaining capability fields are
  * set to what the in-memory representation of *cs1* with the address set to
  * *cs1*.**address** $+$ *rs2* decodes to.
  */
@@ -460,7 +431,7 @@ function clause execute (CIncOffset(cd, cs1, rs2)) = {
   let cs1_val = C(cs1);
   let rs2_val = X(rs2);
 
-  let inCap = clearTagIfSealed(cs1_val);
+  let inCap = cs1_val;
   let (success, newCap) = incCapOffset(inCap, rs2_val);
 
   C(cd) = clearTagIf(newCap, not(success));
@@ -480,7 +451,7 @@ function clause execute (CIncOffsetImmediate(cd, cs1, imm)) = {
   let cs1_val = C(cs1);
   let immBits : xlenbits = sign_extend(imm);
 
-  let inCap = clearTagIfSealed(cs1_val);
+  let inCap = cs1_val;
   let (success, newCap) = incCapOffset(inCap, immBits);
 
   C(cd) = clearTagIf(newCap, not(success));
@@ -500,7 +471,7 @@ function clause execute (CSetOffset(cd, cs1, rs2)) = {
   let cs1_val = C(cs1);
   let rs2_val = X(rs2);
 
-  let inCap = clearTagIfSealed(cs1_val);
+  let inCap = cs1_val;
   let (success, newCap) = setCapOffset(inCap, rs2_val);
 
   C(cd) = clearTagIf(newCap, not(success));
@@ -520,7 +491,7 @@ function clause execute (CSetAddr(cd, cs1, rs2)) = {
   let cs1_val = C(cs1);
   let rs2_val = X(rs2);
 
-  let inCap = clearTagIfSealed(cs1_val);
+  let inCap = cs1_val;
   let (representable, newCap) = setCapAddr(inCap, rs2_val);
 
   C(cd) = clearTagIf(newCap, not(representable));
@@ -547,7 +518,7 @@ function clause execute (CSetBounds(cd, cs1, rs2)) = {
   let newTop : CapLenBits = zero_extend(newBase) + zero_extend(rs2_val);
   let inBounds = inCapBounds(cs1_val, newBase, unsigned(rs2_val));
 
-  let inCap = clearTagIfSealed(cs1_val);
+  let inCap = cs1_val;
   let (_, newCap) = setCapBounds(inCap, newBase, newTop);
 
   C(cd) = clearTagIf(newCap, not(inBounds)); /* ignore exact */
@@ -571,7 +542,7 @@ function clause execute (CSetBoundsImmediate(cd, cs1, uimm)) = {
   let newTop : CapLenBits = zero_extend(newBase) + zero_extend(uimm);
   let inBounds = inCapBounds(cs1_val, newBase, unsigned(uimm));
 
-  let inCap = clearTagIfSealed(cs1_val);
+  let inCap = cs1_val;
   let (_, newCap) = setCapBounds(inCap, newBase, newTop);
 
   C(cd) = clearTagIf(newCap, not(inBounds)); /* ignore exact */
@@ -598,7 +569,7 @@ function clause execute (CSetBoundsExact(cd, cs1, rs2)) = {
   let newTop : CapLenBits = zero_extend(newBase) + zero_extend(rs2_val);
   let inBounds = inCapBounds(cs1_val, newBase, unsigned(rs2_val));
 
-  let inCap = clearTagIfSealed(cs1_val);
+  let inCap = cs1_val;
   let (exact, newCap) = setCapBounds(inCap, newBase, newTop);
 
   C(cd) = clearTagIf(newCap, not(inBounds & exact));
@@ -625,60 +596,6 @@ function clause execute (CMove(cd, cs1)) = {
   RETIRE_SUCCESS
 }
 
-union clause ast = CClear : (bits(2), bits(8))
-/*!
- * Capability registers 8 $\times$ *q* $+$ *i* are each set to **NULL** if the
- * *i*th bit of *m* is set, with the exception that the 0th bit of *m* refers
- * to **DDC** when *q* is 0, rather than **C0**.
- *
- * ## Notes
- *
- * - This instruction is designed to accelerate the register clearing that is
- *   required for secure domain transitions. It is expected that it can be
- *   implemented efficiently in hardware using a single \`valid' bit per
- *   register that is cleared by this instruction and set on any subsequent
- *   write to the register.
- */
-function clause execute (CClear(q, m)) = {
-  let q_u = unsigned(q);
-  foreach (i from 0 to 7)
-    if m[i] == bitone then
-      if q_u == 0 & i == 0 then
-        DDC = null_cap
-      else
-        C(8 * q_u + i) = null_cap;
-  RETIRE_SUCCESS
-}
-
-union clause ast = FPClear : (bits(2), bits(8))
-/*!
- * Floating-point registers 8 $\times$ *q* $+$ *i* are each set to 0 if the
- * *i*th bit of *m* is set.
- *
- * ## Notes
- *
- * - This instruction is designed to accelerate the register clearing that is
- *   required for secure domain transitions. It is expected that it can be
- *   implemented efficiently in hardware using a single \`valid' bit per
- *   register that is cleared by this instruction and set on any subsequent
- *   write to the register.
- *
- * - The 0 value written is FLEN bits wide, the largest supported by the
- *   implementation, such that the in-memory representation of the register is
- *   0, rather than a NaN-boxed narrower value.
- */
-function clause execute (FPClear(q, m)) = {
-  if haveFExt() then {
-    foreach (i from 0 to 7)
-      if m[i] == bitone then
-        F(8 * unsigned(q) + i) = zeros();
-    RETIRE_SUCCESS
-  } else {
-    handle_illegal();
-    RETIRE_FAIL
-  }
-}
-
 union clause ast = CFromPtr : (regidx, regidx, regidx)
 /*!
  * If the value of integer register *rs2* is 0 then capability register *cd* is
@@ -697,7 +614,7 @@ function clause execute (CFromPtr(cd, cs1, rs2)) = {
     C(cd) = null_cap;
     RETIRE_SUCCESS
   } else {
-    let inCap = clearTagIfSealed(cs1_val);
+    let inCap = cs1_val;
     let (success, newCap) = setCapOffset(inCap, rs2_val);
     C(cd) = clearTagIf(newCap, not(success));
     RETIRE_SUCCESS
@@ -727,29 +644,28 @@ function clause execute (CBuildCap(cd, cs1, cs2)) = {
   let cs2_val = C(cs2);
 
   let authorityCap = cs1_val;
-  let requestedCap' = {C(cs2) with tag=true};
-  let requestedSentry = signed(requestedCap'.otype) == otype_sentry;
-  let requestedCap = if requestedSentry then requestedCap' else unsealCap(requestedCap');
+  let requestedCap = {C(cs2) with tag=true};
 
   let (authorityBase, authorityTop) = getCapBounds(authorityCap);
   let (requestedBase, requestedTop) = getCapBounds(requestedCap);
-  let authorityPerms = getCapPerms(authorityCap);
-  let requestedPerms = getCapPerms(requestedCap);
   let requestedFlags = getCapFlags(requestedCap);
-
+  
+  /* check for length < 0 - possible because requested might be untagged */
   let subset = (requestedBase >= authorityBase)
              & (requestedTop <= authorityTop)
-             & (requestedBase <= requestedTop) /* check for length < 0 - possible because requested might be untagged */
-             & ((requestedPerms & authorityPerms) == requestedPerms);
+             & (requestedBase <= requestedTop);
 
-  let inCap = clearTagIfSealed(authorityCap);
+  let inCap = authorityCap;
   let (exact, cd1) = setCapBounds(inCap, to_bits(cap_addr_width, requestedBase), to_bits(cap_len_width, requestedTop));
-  let (_, cd2) = setCapOffset(cd1, getCapOffsetBits(requestedCap)); /* Ignore representability check, since Fast Rep Check not relevant */
-  let cd3 = setCapPerms(cd2, requestedPerms);
+   /* Ignore representability check, since Fast Rep Check not relevant */
+   let (_, cd2) = setCapOffset(cd1, getCapOffsetBits(requestedCap));
+  let cd3 = cd2;
   let cd4 = setCapFlags(cd3, requestedFlags);
-  let cd5 = if requestedSentry then sealCap(cd4, to_bits(cap_otype_width, otype_sentry)) else cd4;
-  let derivable = cd5 == requestedCap; /* True iff requestedCap has bounds not exceeding address space and no reserved bits set, and authority was tagged and unsealed */
-  assert(not(derivable) | exact, "CBuildCap: setCapBounds was not exact"); /* If requestedCap was a derivable encoding then setBounds should be exact */
+  let cd5 = cd4;
+  /* True iff requestedCap has bounds not exceeding address space and no reserved bits set, and authority was tagged and unsealed */
+  let derivable = cd5 == requestedCap; 
+  /* If requestedCap was a derivable encoding then setBounds should be exact */
+  assert(not(derivable) | exact, "CBuildCap: setCapBounds was not exact"); 
   let cd6 = if subset & derivable then cd5 else clearTag(requestedCap);
 
   C(cd) = cd6;
@@ -791,9 +707,6 @@ union clause ast = CTestSubset : (regidx, regidx, regidx)
  * - The operand order for this instruction is reversed compared with the
  *   normal RISC-V comparison instructions, but this may be changed in future.
  *
- * - The **otype** field is ignored for this instruction, but an alternative
- *   implementation might wish to consider capabilities with distinct
- *   **otype**s as unordered as is done for the **tag** field.
  */
 function clause execute (CTestSubset(rd, cs1, cs2)) = {
   let cs1_val = if unsigned(cs1) == 0 then DDC else C(cs1);
@@ -801,16 +714,12 @@ function clause execute (CTestSubset(rd, cs1, cs2)) = {
 
   let (cs2_base, cs2_top) = getCapBounds(cs2_val);
   let (cs1_base, cs1_top) = getCapBounds(cs1_val);
-  let cs2_perms = getCapPerms(cs2_val);
-  let cs1_perms = getCapPerms(cs1_val);
 
   let result = if cs1_val.tag != cs2_val.tag then
                  0b0
                else if cs2_base < cs1_base then
                  0b0
                else if cs2_top > cs1_top then
-                 0b0
-               else if (cs2_perms & cs1_perms) != cs2_perms then
                  0b0
                else
                  0b1;
@@ -843,8 +752,6 @@ union clause ast = JALR_CAP : (regidx, regidx)
  *
  * An exception is raised if:
  *   - *cs1*.**tag** is not set.
- *   - *cs1* is sealed and is not a sentry.
- *   - *cs1*.**perms** does not grant **Permit_Execute**.
  *   - *cs1*.**address** $\lt$ *cs1*.**base**.
  *   - *cs1*.**address** $+$ min_instruction_bytes $\gt$ *cs1*.**top**.
  *   - *cs1*.**base** is unaligned (only possible if PCC relocation is enabled).
@@ -879,12 +786,6 @@ function handle_load_data_via_cap(rd, auth_idx, auth_val, vaddrBits, is_unsigned
   if not(auth_val.tag) then {
     handle_cheri_cap_exception(CapEx_TagViolation, auth_idx);
     RETIRE_FAIL
-  } else if isCapSealed(auth_val) then {
-    handle_cheri_cap_exception(CapEx_SealViolation, auth_idx);
-    RETIRE_FAIL
-  } else if not(auth_val.permit_load) then {
-    handle_cheri_cap_exception(CapEx_PermitLoadViolation, auth_idx);
-    RETIRE_FAIL
   } else if not(inCapBounds(auth_val, vaddrBits, size)) then {
     handle_cheri_cap_exception(CapEx_LengthViolation, auth_idx);
     RETIRE_FAIL
@@ -916,8 +817,6 @@ union clause ast = LoadDataDDC : (regidx, regidx, bool, word_width)
  *
  * An exception is raised if:
  *   - **DDC**.**tag** is not set.
- *   - **DDC** is sealed.
- *   - **DDC**.**perms** does not grant **Permit_Load**.
  *   - **DDC**.**address** $+$ *rs1* $\lt$ **DDC**.**base**.
  *   - **DDC**.**address** $+$ *rs1* $+$ *size* $\gt$ **DDC**.**top**.
  */
@@ -935,8 +834,6 @@ union clause ast = LoadDataCap : (regidx, regidx, bool, word_width)
  *
  * An exception is raised if:
  *   - *cs1*.**tag** is not set.
- *   - *cs1* is sealed.
- *   - *cs1*.**perms** does not grant **Permit_Load**.
  *   - *cs1*.**address** $\lt$ *cs1*.**base**.
  *   - *cs1*.**address** $+$ *size* $\gt$ *cs1*.**top**.
  */
@@ -953,12 +850,6 @@ function handle_load_cap_via_cap(cd, auth_idx, auth_val, vaddrBits) = {
   if not(auth_val.tag) then {
     handle_cheri_cap_exception(CapEx_TagViolation, auth_idx);
     RETIRE_FAIL
-  } else if isCapSealed(auth_val) then {
-    handle_cheri_cap_exception(CapEx_SealViolation, auth_idx);
-    RETIRE_FAIL
-  } else if not(auth_val.permit_load) then {
-    handle_cheri_cap_exception(CapEx_PermitLoadViolation, auth_idx);
-    RETIRE_FAIL
   } else if not(inCapBounds(auth_val, vaddrBits, cap_size)) then {
     handle_cheri_cap_exception(CapEx_LengthViolation, auth_idx);
     RETIRE_FAIL
@@ -972,7 +863,7 @@ function handle_load_cap_via_cap(cd, auth_idx, auth_val, vaddrBits) = {
       let c = mem_read_cap(addr, aq, aq & rl, false);
       match c {
         MemValue(v) => {
-          let cr = clearTagIf(v, ptw_info.ptw_lc == PTW_LC_CLEAR | not(auth_val.permit_load_cap));
+          let cr = clearTagIf(v, ptw_info.ptw_lc == PTW_LC_CLEAR);
           C(cd) = cr;
           RETIRE_SUCCESS
         },
@@ -992,8 +883,6 @@ union clause ast = LoadCapDDC : (regidx, regidx)
  *
  * An exception is raised if:
  *   - **DDC**.**tag** is not set.
- *   - **DDC** is sealed.
- *   - **DDC**.**perms** does not grant **Permit_Load**.
  *   - **DDC**.**address** $+$ *rs1* $\lt$ **DDC**.**base**.
  *   - **DDC**.**address** $+$ *rs1* $+$ **CLEN** $/$ 8 $\gt$ **DDC**.**top**.
  *   - **DDC**.**address** $+$ *rs1* is unaligned, regardless of whether the
@@ -1014,8 +903,6 @@ union clause ast = LoadCapCap : (regidx, regidx)
  *
  * An exception is raised if:
  *   - *cs1*.**tag** is not set.
- *   - *cs1* is sealed.
- *   - *cs1*.**perms** does not grant **Permit_Load**.
  *   - *cs1*.**address** $\lt$ *cs1*.**base**.
  *   - *cs1*.**address** $+$ **CLEN** $/$ 8 $\gt$ *cs1*.**top**.
  *   - *cs1*.**address** is unaligned, regardless of whether the implementation
@@ -1042,9 +929,6 @@ union clause ast = CLoadTags : (regidx, regidx)
  *
  * An exception is raised if:
  *   - *cs1*.**tag** is not set.
- *   - *cs1* is sealed.
- *   - *cs1*.**perms** does not grant both **Permit_Load** and
- *     **Permit_Load_Capability**.
  *   - *cs1*.**address** $\lt$ *cs1*.**base**.
  *   - *cs1*.**address** $+$ [caps_per_cache_line] $\times$ **CLEN** $/$ 8
  *     $\gt$ *cs1*.**top**.
@@ -1079,15 +963,6 @@ function clause execute (CLoadTags(rd, cs1)) = {
   let rl : bool = false;
   if not(cs1_val.tag) then {
     handle_cheri_reg_exception(CapEx_TagViolation, cs1);
-    RETIRE_FAIL
-  } else if isCapSealed(cs1_val) then {
-    handle_cheri_reg_exception(CapEx_SealViolation, cs1);
-    RETIRE_FAIL
-  } else if not(cs1_val.permit_load) then {
-    handle_cheri_reg_exception(CapEx_PermitLoadViolation, cs1);
-    RETIRE_FAIL
-  } else if not(cs1_val.permit_load_cap) then {
-    handle_cheri_reg_exception(CapEx_PermitLoadCapViolation, cs1);
     RETIRE_FAIL
   } else if not(inCapBounds(cs1_val, vaddr, caps_per_cache_line * cap_size)) then {
     handle_cheri_reg_exception(CapEx_LengthViolation, cs1);
@@ -1145,12 +1020,6 @@ function handle_loadres_data_via_cap(rd, auth_idx, auth_val, vaddrBits, width) =
   if not(auth_val.tag) then {
     handle_cheri_cap_exception(CapEx_TagViolation, auth_idx);
     RETIRE_FAIL
-  } else if isCapSealed(auth_val) then {
-    handle_cheri_cap_exception(CapEx_SealViolation, auth_idx);
-    RETIRE_FAIL
-  } else if not(auth_val.permit_load) then {
-    handle_cheri_cap_exception(CapEx_PermitLoadViolation, auth_idx);
-    RETIRE_FAIL
   } else if not(inCapBounds(auth_val, vaddrBits, size)) then {
     handle_cheri_cap_exception(CapEx_LengthViolation, auth_idx);
     RETIRE_FAIL
@@ -1178,12 +1047,6 @@ function handle_loadres_cap_via_cap(cd, auth_idx, auth_val, vaddrBits, aq, rl) =
 if not(auth_val.tag) then {
     handle_cheri_cap_exception(CapEx_TagViolation, auth_idx);
     RETIRE_FAIL
-  } else if isCapSealed(auth_val) then {
-    handle_cheri_cap_exception(CapEx_SealViolation, auth_idx);
-    RETIRE_FAIL
-  } else if not(auth_val.permit_load) then {
-    handle_cheri_cap_exception(CapEx_PermitLoadViolation, auth_idx);
-    RETIRE_FAIL
   } else if not(inCapBounds(auth_val, vaddrBits, cap_size)) then {
     handle_cheri_cap_exception(CapEx_LengthViolation, auth_idx);
     RETIRE_FAIL
@@ -1201,8 +1064,7 @@ if not(auth_val.tag) then {
                    then clearTag(v) /* strip the tag */
                    else {
                      /* the Sail model currently reserves virtual addresses */
-                     load_reservation(addr);
-                     clearTagIf(v, not(auth_val.permit_load_cap))
+                     load_reservation(addr)
                    };
           C(cd) = cr;
           RETIRE_SUCCESS
@@ -1283,12 +1145,6 @@ function handle_store_data_via_cap(rs2, auth_idx, auth_val, vaddrBits, width) = 
   if not(auth_val.tag) then {
     handle_cheri_cap_exception(CapEx_TagViolation, auth_idx);
     RETIRE_FAIL
-  } else if isCapSealed(auth_val) then {
-    handle_cheri_cap_exception(CapEx_SealViolation, auth_idx);
-    RETIRE_FAIL
-  } else if not(auth_val.permit_store) then {
-    handle_cheri_cap_exception(CapEx_PermitStoreViolation, auth_idx);
-    RETIRE_FAIL
   } else if not(inCapBounds(auth_val, vaddrBits, size)) then {
     handle_cheri_cap_exception(CapEx_LengthViolation, auth_idx);
     RETIRE_FAIL
@@ -1332,8 +1188,6 @@ union clause ast = StoreDataDDC : (regidx, regidx, word_width)
  *
  * An exception is raised if:
  *   - **DDC**.**tag** is not set.
- *   - **DDC** is sealed.
- *   - **DDC**.**perms** does not grant **Permit_Store**.
  *   - **DDC**.**address** $+$ *rs1* $\lt$ **DDC**.**base**.
  *   - **DDC**.**address** $+$ *rs1* $+$ *size* $\gt$ **DDC**.**top**.
  */
@@ -1351,8 +1205,6 @@ union clause ast = StoreDataCap : (regidx, regidx, word_width)
  *
  * An exception is raised if:
  *   - *cs1*.**tag** is not set.
- *   - *cs1* is sealed.
- *   - *cs1*.**perms** does not grant **Permit_Store**.
  *   - *cs1*.**address** $\lt$ *cs1*.**base**.
  *   - *cs1*.**address** $+$ *size* $\gt$ *cs1*.**top**.
  */
@@ -1369,18 +1221,6 @@ function handle_store_cap_via_cap(cs2, auth_idx, auth_val, vaddrBits) = {
   let rl : bool = false;
   if not(auth_val.tag) then {
     handle_cheri_cap_exception(CapEx_TagViolation, auth_idx);
-    RETIRE_FAIL
-  } else if isCapSealed(auth_val) then {
-    handle_cheri_cap_exception(CapEx_SealViolation, auth_idx);
-    RETIRE_FAIL
-  } else if not(auth_val.permit_store) then {
-    handle_cheri_cap_exception(CapEx_PermitStoreViolation, auth_idx);
-    RETIRE_FAIL
-  } else if not(auth_val.permit_store_cap) & cs2_val.tag then {
-    handle_cheri_cap_exception(CapEx_PermitStoreCapViolation, auth_idx);
-    RETIRE_FAIL
-  } else if not(auth_val.permit_store_local_cap) & cs2_val.tag & not(cs2_val.global) then {
-    handle_cheri_cap_exception(CapEx_PermitStoreLocalCapViolation, auth_idx);
     RETIRE_FAIL
   } else if not(inCapBounds(auth_val, vaddrBits, cap_size)) then {
     handle_cheri_cap_exception(CapEx_LengthViolation, auth_idx);
@@ -1416,12 +1256,6 @@ union clause ast = StoreCapDDC : (regidx, regidx)
  *
  * An exception is raised if:
  *   - **DDC**.**tag** is not set.
- *   - **DDC** is sealed.
- *   - **DDC**.**perms** does not grant **Permit_Store**.
- *   - **DDC**.**perms** does not grant **Permit_Store_Capability** and
- *     *cs2*.**tag** is set.
- *   - **DDC**.**perms** does not grant **Permit_Store_Local_Capability**,
- *     *cs2*.**tag** is set and *cs2*.**perms** does not grant **Global**.
  *   - **DDC**.**address** $+$ *rs1* $\lt$ **DDC**.**base**.
  *   - **DDC**.**address** $+$ *rs1* $+$ **CLEN** $/$ 8 $\gt$ **DDC**.**top**.
  */
@@ -1439,12 +1273,6 @@ union clause ast = StoreCapCap : (regidx, regidx)
  *
  * An exception is raised if:
  *   - *cs1*.**tag** is not set.
- *   - *cs1* is sealed.
- *   - *cs1*.**perms** does not grant **Permit_Store**.
- *   - *cs1*.**perms** does not grant **Permit_Store_Capability** and
- *     *cs2*.**tag** is set.
- *   - *cs1*.**perms** does not grant **Permit_Store_Local_Capability**,
- *     *cs2*.**tag** is set and *cs2*.**perms** does not grant **Global**.
  *   - *cs1*.**address** $\lt$ *cs1*.**base**.
  *   - *cs1*.**address** $+$ **CLEN** $\gt$ *cs1*.**top**.
  */
@@ -1468,8 +1296,6 @@ union clause ast = LoadCapImm : (regidx, regidx, bits(12))
  *
  * In integer mode, an exception is raised if:
  *   - **DDC**.**tag** is not set.
- *   - **DDC** is sealed.
- *   - **DDC**.**perms** does not grant **Permit_Load**.
  *   - **DDC**.**address** $+$ *rs1* $+$ *imm* $\lt$ **DDC**.**base**.
  *   - **DDC**.**address** $+$ *rs1* $+$ *imm* $+$ **CLEN** $/$ 8 $\gt$
  *     **DDC**.**top**.
@@ -1478,8 +1304,6 @@ union clause ast = LoadCapImm : (regidx, regidx, bits(12))
  *
  * In capability mode, an exception is raised if:
  *   - *cs1*.**tag** is not set.
- *   - *cs1* is sealed.
- *   - *cs1*.**perms** does not grant **Permit_Load**.
  *   - *cs1*.**address** $+$ *imm* $\lt$ *cs1*.**base**.
  *   - *cs1*.**address** $+$ *imm* $+$ **CLEN** $/$ 8 $\gt$ *cs1*.**top**.
  *   - *cs1*.**address** $+$ *imm* is unaligned, regardless of whether the
@@ -1502,24 +1326,12 @@ union clause ast = StoreCapImm : (regidx, regidx, bits(12))
  *
  * In integer mode, an exception is raised if:
  *   - **DDC**.**tag** is not set.
- *   - **DDC** is sealed.
- *   - **DDC**.**perms** does not grant **Permit_Store**.
- *   - **DDC**.**perms** does not grant **Permit_Store_Capability** and
- *     *cs2*.**tag** is set.
- *   - **DDC**.**perms** does not grant **Permit_Store_Local_Capability**,
- *     *cs2*.**tag** is set and *cs2*.**perms** does not grant **Global**.
  *   - **DDC**.**address** $+$ *rs1* $+$ *imm* $\lt$ **DDC**.**base**.
  *   - **DDC**.**address** $+$ *rs1* $+$ *imm* $+$ **CLEN** $/$ 8 $\gt$
  *     **DDC**.**top**.
  *
  * In capability mode, an exception is raised if:
  *   - *cs1*.**tag** is not set.
- *   - *cs1* is sealed.
- *   - *cs1*.**perms** does not grant **Permit_Store**.
- *   - *cs1*.**perms** does not grant **Permit_Store_Capability** and
- *     *cs2*.**tag** is set.
- *   - *cs1*.**perms** does not grant **Permit_Store_Local_Capability**,
- *     *cs2*.**tag** is set and *cs2*.**perms** does not grant **Global**.
  *   - *cs1*.**address** $+$ *imm* $\lt$ *cs1*.**base**.
  *   - *cs1*.**address** $+$ *imm* $+$ **CLEN** $/$ 8 $\gt$ *cs1*.**top**.
  */
@@ -1536,12 +1348,6 @@ function handle_store_cond_data_via_cap(rs2, auth_idx, auth_val, vaddrBits, widt
   let rl : bool = true;
   if not(auth_val.tag) then {
     handle_cheri_cap_exception(CapEx_TagViolation, auth_idx);
-    RETIRE_FAIL
-  } else if isCapSealed(auth_val) then {
-    handle_cheri_cap_exception(CapEx_SealViolation, auth_idx);
-    RETIRE_FAIL
-  } else if not(auth_val.permit_store) then {
-    handle_cheri_cap_exception(CapEx_PermitStoreViolation, auth_idx);
     RETIRE_FAIL
   } else if not(inCapBounds(auth_val, vaddrBits, size)) then {
     handle_cheri_cap_exception(CapEx_LengthViolation, auth_idx);
@@ -1602,18 +1408,6 @@ function handle_store_cond_cap_via_cap(rd, cs2, auth_idx, auth_val, vaddrBits, a
   let cs2_val = C(cs2);
   if not(auth_val.tag) then {
     handle_cheri_cap_exception(CapEx_TagViolation, auth_idx);
-    RETIRE_FAIL
-  } else if isCapSealed(auth_val) then {
-    handle_cheri_cap_exception(CapEx_SealViolation, auth_idx);
-    RETIRE_FAIL
-  } else if not(auth_val.permit_store) then {
-    handle_cheri_cap_exception(CapEx_PermitStoreViolation, auth_idx);
-    RETIRE_FAIL
-  } else if not(auth_val.permit_store_cap) & cs2_val.tag then {
-    handle_cheri_cap_exception(CapEx_PermitStoreCapViolation, auth_idx);
-    RETIRE_FAIL
-  } else if not(auth_val.permit_store_local_cap) & cs2_val.tag & not(cs2_val.global) then {
-    handle_cheri_cap_exception(CapEx_PermitStoreLocalCapViolation, auth_idx);
     RETIRE_FAIL
   } else if not(inCapBounds(auth_val, vaddrBits, cap_size)) then {
     handle_cheri_cap_exception(CapEx_LengthViolation, auth_idx);
@@ -1753,21 +1547,6 @@ function clause execute AMOSwapCap(cd, cs2, rs1_cs1, aq, rl) = {
     if not(auth_val.tag) then {
       handle_cheri_cap_exception(CapEx_TagViolation, auth_idx);
       RETIRE_FAIL
-    } else if isCapSealed(auth_val) then {
-      handle_cheri_cap_exception(CapEx_SealViolation, auth_idx);
-      RETIRE_FAIL
-    } else if not(auth_val.permit_load) then {
-      handle_cheri_cap_exception(CapEx_PermitLoadViolation, auth_idx);
-      RETIRE_FAIL
-    } else if not(auth_val.permit_store) then {
-      handle_cheri_cap_exception(CapEx_PermitStoreViolation, auth_idx);
-      RETIRE_FAIL
-    } else if not(auth_val.permit_store_cap) & cs2_val.tag then {
-      handle_cheri_cap_exception(CapEx_PermitStoreCapViolation, auth_idx);
-      RETIRE_FAIL
-    } else if not(auth_val.permit_store_local_cap) & cs2_val.tag & not(cs2_val.global) then {
-      handle_cheri_cap_exception(CapEx_PermitStoreLocalCapViolation, auth_idx);
-      RETIRE_FAIL
     } else if not(inCapBounds(auth_val, vaddr, cap_size)) then {
       handle_cheri_cap_exception(CapEx_LengthViolation, auth_idx);
       RETIRE_FAIL
@@ -1788,7 +1567,7 @@ function clause execute AMOSwapCap(cd, cs2, rs1_cs1, aq, rl) = {
                   let wres : MemoryOpResult(bool) = mem_write_cap(addr, cs2_val, aq & rl, rl, false);
                   match wres {
                     MemValue(_) => {
-                      let cr = clearTagIf(v, ptw_info.ptw_lc == PTW_LC_CLEAR | not(auth_val.permit_load_cap));
+                      let cr = clearTagIf(v, ptw_info.ptw_lc == PTW_LC_CLEAR);
                       C(cd) = cr;
                       RETIRE_SUCCESS
                     },
@@ -1923,7 +1702,7 @@ mapping clause assembly = CInvoke(cs1, cs2) <-> "cinvoke" ^ spc() ^ cap_reg_name
 /* Loads and stores */
 
 let haveRV64 = sizeof(xlen) >= 64
-let haveRV32  = sizeof(xlen) >= 32
+let haveRV32 = sizeof(xlen) >= 32
 
 mapping clause encdec = LoadDataDDC(rd, rs1, false, BYTE)   if (haveXcheri()) <-> 0b1111101 @ 0b00000 @ rs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri())  /* lb.ddc */
 mapping clause encdec = LoadDataDDC(rd, rs1, false, HALF)   if (haveXcheri()) <-> 0b1111101 @ 0b00001 @ rs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri())  /* lh.ddc */

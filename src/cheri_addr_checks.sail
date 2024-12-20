@@ -60,6 +60,18 @@
 /*  SUCH DAMAGE.                                                                         */
 /*=======================================================================================*/
 
+/*=======================================================================================*/
+/*  CHERI RISCV Sail Model (Truisa Version)                                              */
+/*                                                                                       */
+/*  This CHERI Sail RISC-V architecture model here, comprising all files and             */
+/*  directories except for the snapshots of the Lem and Sail libraries in the            */
+/*  prover_snapshots directory (which include copies of their licenses), is subject      */
+/*  to the BSD two-clause licence below.                                                 */
+/*                                                                                       */
+/*  Copyright (c) 2024-2025                                                              */
+/*    Dong Tong, Peking University                                                       */
+/*=======================================================================================*/
+
 /* Error handlers for address check errors */
 
 val handle_cheri_cap_exception : (CapEx, capreg_idx) -> unit effect {escape, rreg, wreg}
@@ -108,10 +120,6 @@ function ext_fetch_check_pc(start_pc, pc) = {
     /* We need to perform the permission checks only for the first granule. */
     if      not(PCC.tag)
     then    Ext_FetchAddr_Error(CapEx_TagViolation)
-    else if isCapSealed(PCC)
-    then    Ext_FetchAddr_Error(CapEx_SealViolation)
-    else if not(PCC.permit_execute)
-    then    Ext_FetchAddr_Error(CapEx_PermitExecuteViolation)
     /* If PCC relocation is enabled, require that PCC.base be as aligned as PC.
        This is also enforced when setting PCC in most places. */
     else if have_pcc_relocation() & (pcc_base[0] != bitzero | (pcc_base[1] != bitzero & ~(haveRVC())))
@@ -193,24 +201,8 @@ function ext_data_get_addr(base_reg : regidx, offset : xlenbits, acc : AccessTyp
 
   let (auth_val, newAddr, auth_idx) = get_cheri_mode_cap_addr(base_reg, offset);
 
-  let (have_rqd_load_perm, have_rqd_store_perm) : (bool, bool) = match acc {
-    Read(Data)            => (auth_val.permit_load, true                 ),
-    Write(Data)           => (true                , auth_val.permit_store),
-    ReadWrite(Data, Data) => (auth_val.permit_load, auth_val.permit_store),
-    Execute()             => internal_error(__FILE__, __LINE__, "ext_data_get_addr for Execute"),
-    Read(_)               => internal_error(__FILE__, __LINE__, "ext_data_get_addr for Read(_)"),
-    Write(_)              => internal_error(__FILE__, __LINE__, "ext_data_get_addr for Write(_)"),
-    ReadWrite(_, _)       => internal_error(__FILE__, __LINE__, "ext_data_get_addr for ReadWrite(_, _)")
-  };
-
   if not(auth_val.tag) then
     Ext_DataAddr_Error(CapEx_TagViolation, auth_idx)
-  else if isCapSealed(auth_val) then
-    Ext_DataAddr_Error(CapEx_SealViolation, auth_idx)
-  else if not(have_rqd_load_perm) then
-    Ext_DataAddr_Error(CapEx_PermitLoadViolation, auth_idx)
-  else if not(have_rqd_store_perm) then
-    Ext_DataAddr_Error(CapEx_PermitStoreViolation, auth_idx)
   else if not(inCapBounds(auth_val, newAddr, word_width_bytes(width))) then
     Ext_DataAddr_Error(CapEx_LengthViolation, auth_idx)
   else
