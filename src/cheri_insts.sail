@@ -1680,12 +1680,6 @@ mapping clause assembly = CSetBoundsImmediate(cd, cs1, imm12) <-> "csetboundsimm
 
 mapping clause assembly = CSEQX(rd, cs1, cs2) <-> "cseqx" ^ spc() ^ reg_name(rd) ^ sep() ^ cap_reg_name(cs1) ^ sep() ^ cap_reg_name(cs2)
 
-/* Two source */
-
-mapping clause encdec = CInvoke(cs1, cs2)   if (haveXcheri()) <-> 0b1111110 @ cs2 @ cs1 @ 0b000 @ 0b00001 @ 0b1011011 if (haveXcheri())
-
-mapping clause assembly = CInvoke(cs1, cs2) <-> "cinvoke" ^ spc() ^ cap_reg_name(cs1) ^ sep() ^ cap_reg_name(cs2)
-
 /* Loads and stores */
 
 let haveRV64 = sizeof(xlen) >= 64

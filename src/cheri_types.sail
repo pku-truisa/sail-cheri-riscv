@@ -81,7 +81,8 @@ enum CapEx = {
   CapEx_LengthViolation,
   CapEx_TagViolation,
   CapEx_UserDefViolation,
-  CapEx_UnalignedBase
+  CapEx_UnalignedBase,
+  CapEx_AccessSystemRegsViolation
 }
 
 function CapExCode(ex) : CapEx -> bits(5) =
@@ -90,7 +91,8 @@ function CapExCode(ex) : CapEx -> bits(5) =
     CapEx_LengthViolation               => 0b00001,
     CapEx_TagViolation                  => 0b00010,
     CapEx_UserDefViolation              => 0b01000,
-    CapEx_UnalignedBase                 => 0b01011
+    CapEx_UnalignedBase                 => 0b01011,
+    CapEx_AccessSystemRegsViolation     => 0b11000
   }
 
 function string_of_capex (ex) : CapEx -> string =
@@ -99,7 +101,8 @@ function string_of_capex (ex) : CapEx -> string =
     CapEx_LengthViolation               => "LengthViolation"             ,
     CapEx_TagViolation                  => "TagViolation"                ,
     CapEx_UserDefViolation              => "UserDefViolation"            ,
-    CapEx_UnalignedBase                 => "UnalignedBounds"             
+    CapEx_UnalignedBase                 => "UnalignedBounds"             ,
+    CapEx_AccessSystemRegsViolation     => "AccessSystemRegsViolation"   
   }
 
 type capreg_idx = bits(6)
