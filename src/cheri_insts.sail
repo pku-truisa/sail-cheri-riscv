@@ -301,8 +301,6 @@ union clause ast = CSpecialRW : (regidx, screg, regidx)
  *   - *scr* does not exist.
  *   - *scr* is read-only and *cs1* is not **C0**.
  *   - *scr* is only accessible to a higher privilege mode.
- *   - *scr* requires **Permit_Access_System_Registers** and that is not
- *     granted by **PCC**.**perms**.
  *
  * ## Notes
  *
@@ -442,8 +440,8 @@ union clause ast = CIncOffsetImmediate : (regidx, regidx, bits(12))
 /*!
  * Capability register *cd* is set equal to capability register *cs1* with its
  * **address** replaced with *cs1*.**address** $+$ *imm*.
- * If the resulting capability cannot be represented exactly, or if *cs1* was
- * sealed, then *cd*.**tag** is cleared. The remaining capability fields are
+ * If the resulting capability cannot be represented exactly,
+ * then *cd*.**tag** is cleared. The remaining capability fields are
  * set to what the in-memory representation of *cs1* with the address set to
  * *cs1*.**address** $+$ *imm* decodes to.
  */
@@ -462,8 +460,8 @@ union clause ast = CSetOffset : (regidx, regidx, regidx)
 /*!
  * Capability register *cd* is set equal to capability register *cs1* with its
  * **address** replaced with *cs1*.**base** $+$ *rs2*.
- * If the resulting capability cannot be represented exactly, or if *cs1* was
- * sealed, then *cd*.**tag** is cleared. The remaining capability fields are
+ * If the resulting capability cannot be represented exactly,
+ * then *cd*.**tag** is cleared. The remaining capability fields are
  * set to what the in-memory representation of *cs1* with the address set to
  * *cs1*.**base** $+$ *rs2* decodes to.
  */
@@ -482,8 +480,8 @@ union clause ast = CSetAddr : (regidx, regidx, regidx)
 /*!
  * Capability register *cd* is set equal to capability register *cs1* with its
  * **address** replaced with *rs2*.
- * If the resulting capability cannot be represented exactly, or if *cs1* was
- * sealed, then *cd*.**tag** is cleared. The remaining capability fields are
+ * If the resulting capability cannot be represented exactly, 
+ * then *cd*.**tag** is cleared. The remaining capability fields are
  * set to what the in-memory representation of *cs1* with the address set to
  * *rs2* decodes to.
  */
@@ -506,9 +504,7 @@ union clause ast = CSetBounds : (regidx, regidx, regidx)
  * replaced with integer register *rs2*. If the resulting capability cannot be
  * represented exactly the **base** will be rounded down and the **length**
  * will be rounded up by the smallest amount needed to form a representable
- * capability covering the requested bounds. The **tag** field of the result
- * is cleared if the bounds of the result exceed the bounds of *cs1*, or if
- * *cs1* was sealed.
+ * capability covering the requested bounds.
  */
 function clause execute (CSetBounds(cd, cs1, rs2)) = {
   let cs1_val = C(cs1);
@@ -532,8 +528,7 @@ union clause ast = CSetBoundsImmediate : (regidx, regidx, bits(12))
  * replaced with *uimm*. If the resulting capability cannot be represented
  * exactly the **base** will be rounded down and the **length** will be rounded
  * up by the smallest amount needed to form a representable capability covering
- * the requested bounds. The **tag** field of the result is cleared if the
- * bounds of the result exceed the bounds of *cs1*, or if *cs1* was sealed.
+ * the requested bounds. 
  */
 function clause execute (CSetBoundsImmediate(cd, cs1, uimm)) = {
   let cs1_val = C(cs1);
@@ -557,9 +552,7 @@ union clause ast = CSetBoundsExact : (regidx, regidx, regidx)
  * represented exactly, the **tag** field will be cleared (unlike
  * [CSetBounds]), the **base** will be rounded down and the **length** will be
  * rounded up by the smallest amount needed to form a representable capability
- * covering the requested bounds. The **tag** field of the result is cleared
- * if the bounds of the result exceed the bounds of *cs1*, or if *cs1* was
- * sealed.
+ * covering the requested bounds. 
  */
 function clause execute (CSetBoundsExact(cd, cs1, rs2)) = {
   let cs1_val = C(cs1);
@@ -601,7 +594,7 @@ union clause ast = CFromPtr : (regidx, regidx, regidx)
  * If the value of integer register *rs2* is 0 then capability register *cd* is
  * set to **NULL**. Otherwise capability register *cd* is set to capability
  * register *cs1* with its **offset** replaced with *rs2*. If the resulting
- * capability cannot be represented exactly, or if *cs1* was sealed, then
+ * capability cannot be represented exactly, then
  * *cd*.**tag** is cleared. The remaining capability fields are set to what the
  * in-memory representation of *cs1* with the address set to *cd*.**address**
  * decodes to.
@@ -624,12 +617,11 @@ function clause execute (CFromPtr(cd, cs1, rs2)) = {
 union clause ast = CBuildCap : (regidx, regidx, regidx)
 /*!
  * Capability register *cd* is set equal to capability register *cs1* with its
- * **base**, **length**, **address**, **perms**, **uperms** and **flags**
- * replaced with the corresponding fields in capability register *cs2*. If
- * *cs2* is a sentry then *cd* is also sealed as a sentry. If the resulting
- * capability is not a subset of *cs1* in bounds or permissions, or is not a
+ * **base**, **length**, **address** and **flags**
+ * replaced with the corresponding fields in capability register *cs2*. 
+ * If the resulting capability is not a subset of *cs1* in bounds, or is not a
  * legally derivable capability, or if *cs1* did not have its **tag** field
- * set, or if *cs1* was sealed, *cd* is replaced with *cs2* with its **tag**
+ * set, *cd* is replaced with *cs2* with its **tag**
  * field cleared.
  *
  * ## Notes
@@ -662,7 +654,7 @@ function clause execute (CBuildCap(cd, cs1, cs2)) = {
   let cd3 = cd2;
   let cd4 = setCapFlags(cd3, requestedFlags);
   let cd5 = cd4;
-  /* True iff requestedCap has bounds not exceeding address space and no reserved bits set, and authority was tagged and unsealed */
+  /* True iff requestedCap has bounds not exceeding address space and no reserved bits set, and authority was tagged */
   let derivable = cd5 == requestedCap; 
   /* If requestedCap was a derivable encoding then setBounds should be exact */
   assert(not(derivable) | exact, "CBuildCap: setCapBounds was not exact"); 
@@ -743,10 +735,9 @@ function clause execute (CSEQX(rd, cs1, cs2)) = {
 
 union clause ast = JALR_CAP : (regidx, regidx)
 /*!
- * Capability register *cd* is replaced with the next instruction's **PCC** and
- * sealed as a sentry. **PCC** is replaced with the value of capability
- * register *cs1* with the 0th bit of its **address** set to 0 and is unsealed
- * if it is a sentry.
+ * Capability register *cd* is replaced with the next instruction's **PCC**.
+ * **PCC** is replaced with the value of capability
+ * register *cs1* with the 0th bit of its **address** set to 0.
  *
  * ## Exceptions
  *
@@ -876,8 +867,7 @@ function handle_load_cap_via_cap(cd, auth_idx, auth_val, vaddrBits) = {
 union clause ast = LoadCapDDC : (regidx, regidx)
 /*!
  * Capability register *cd* is replaced with the capability located in memory
- * at **DDC**.**address** $+$ *rs1*, and if **DDC**.**perms** does not grant
- * **Permit_Load_Capability** then *cd*.**tag** is cleared.
+ * at **DDC**.**address** $+$ *rs1*
  *
  * ## Exceptions
  *
@@ -896,8 +886,7 @@ function clause execute (LoadCapDDC(cd, rs1)) = {
 union clause ast = LoadCapCap : (regidx, regidx)
 /*!
  * Capability register *cd* is replaced with the capability located in memory
- * at *cs1*.**address**, and if *cs1*.**perms** does not grant
- * **Permit_Load_Capability** then *cd*.**tag** is cleared.
+ * at *cs1*.**address**
  *
  * ## Exceptions
  *
@@ -1285,12 +1274,10 @@ function clause execute (StoreCapCap(cs2, cs1)) = {
 union clause ast = LoadCapImm : (regidx, regidx, bits(12))
 /*!
  * In integer mode, capability register *cd* is replaced with the capability
- * located in memory at **DDC**.**address** $+$ *rs1* $+$ *imm*, and if
- * **DDC**.**perms** does not grant **Permit_Load_Capability** then
- * *cd*.**tag** is cleared. In capability mode, capability register *cd* is
+ * located in memory at **DDC**.**address** $+$ *rs1* $+$ *imm*
+ * In capability mode, capability register *cd* is
  * replaced with the capability located in memory at *cs1*.**address** $+$
- * *imm*, and if *cs1*.**perms** does not grant **Permit_Load_Capability** then
- * *cd*.**tag** is cleared.
+ * *imm*
  *
  * ## Exceptions
  *

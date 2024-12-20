@@ -65,8 +65,7 @@
 type ext_exception = unit
 
 /*
- * On traps, EPCC comes to hold PCC verbatim.  Notably, PCC is not sealed under
- * otype_sentry (contrast, for example, CJALR).
+ * On traps, EPCC comes to hold PCC verbatim.  
  */
 function handle_trap_extension(p : Privilege, pc : xlenbits, u : option(unit)) -> unit = {
   match p {
@@ -126,8 +125,7 @@ function get_xret_target(p) = {
 
 /*
  * Upon setting any of the ?EPCC values using the (integer) CSRs, derive the
- * result using the current contents of EPCC.  If that's sealed (esp., a
- * sentry) this will de-tag, which won't work out very well.
+ * result using the current contents of EPCC. 
  *
  * Legalization is deferred until read.
  */
@@ -152,14 +150,6 @@ function prepare_xret_target(p) = {
                           };
 
   let epcc = legalize_epcc(epcc);
-
-  /*
-   * Sentries unseal on transfer into nextPCC; other sealed types will trap
-   * with a seal violation later, when we go to do a fetch from nextPCC.
-   */
-  let epcc = if epcc.otype == to_bits(cap_otype_width, otype_sentry)
-             then unsealCap(epcc)
-             else epcc;
 
   nextPCC = epcc;
   epcc.address
