@@ -73,7 +73,7 @@ function RegStr(r) = capToString(r)
 /* conversions */
 
 val regval_from_reg : regtype -> xlenbits
-function regval_from_reg(r) = r.address
+function regval_from_reg(r) = address_to_int(r.address) 
 
 val regval_into_reg : xlenbits -> regtype
-function regval_into_reg(v) = {null_cap with address = v}
+function regval_into_reg(v) = {null_cap with address = int_to_address(v)}

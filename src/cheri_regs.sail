@@ -141,7 +141,7 @@ function wC (r, v) = {
     _  => internal_error(__FILE__, __LINE__, "Invalid capability register")
   };
   if (r != 0) then {
-     rvfi_wX(r, v.address);
+     rvfi_wX(r, address_to_int(v.address));
      if get_config_print_reg() then
        print_reg("x" ^ dec_str(r) ^ " <- " ^ RegStr(v));
   }

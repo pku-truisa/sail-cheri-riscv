@@ -106,7 +106,7 @@ function handle_cheri_pcc_exception(capEx) =
   handle_cheri_cap_exception(capEx, 0b100000)
 
 val pcc_access_system_regs : unit -> bool effect {rreg}
-function pcc_access_system_regs () = PCC.access_system_regs
+function pcc_access_system_regs () = true
 
 /* CHERI fetch address checks */
 
@@ -124,12 +124,12 @@ function ext_fetch_check_pc(start_pc, pc) = {
        This is also enforced when setting PCC in most places. */
     else if have_pcc_relocation() & (pcc_base[0] != bitzero | (pcc_base[1] != bitzero & ~(haveRVC())))
     then    Ext_FetchAddr_Error(CapEx_UnalignedBase)
-    else if not(inCapBounds(PCC, pc, 2))
+    else if not(inCapBounds(PCC, int_to_address(pc), 2))
     then    Ext_FetchAddr_Error(CapEx_LengthViolation)
     else    Ext_FetchAddr_OK(pc)
   } else {
     /* Perform only the bounds checks on the current granule, i.e. pc. */
-    if      not(inCapBounds(PCC, pc, 2))
+    if      not(inCapBounds(PCC, int_to_address(pc), 2))
     then    Ext_FetchAddr_Error(CapEx_LengthViolation)
     else    Ext_FetchAddr_OK(pc)
   }
@@ -148,16 +148,16 @@ function ext_control_check_addr(pc : xlenbits) -> Ext_ControlAddr_Check(ext_cont
    * below may include a set addr[0], and so the bounds checks should
    * be accurate.
    */
-  let pc = if have_pcc_relocation() then getCapBaseBits(PCC) + pc else pc;
+  let pc = if have_pcc_relocation() then address_to_int(getCapBaseBits(PCC)) + pc else pc;
   let target : xlenbits = [pc with 0=bitzero];
-  if   not(inCapBounds(PCC, target, min_instruction_bytes ()))
+  if   not(inCapBounds(PCC, int_to_address(target), min_instruction_bytes ()))
   then Ext_ControlAddr_Error(CapEx_LengthViolation, PCC_IDX)
   else Ext_ControlAddr_OK(target)
 }
 
 /* the control address is derived from the PC register, e.g. in JAL */
 function ext_control_check_pc(pc : xlenbits) -> Ext_ControlAddr_Check(ext_control_addr_error) = {
-  if   not(inCapBounds(PCC, pc, min_instruction_bytes ()))
+  if   not(inCapBounds(PCC, int_to_address(pc), min_instruction_bytes ()))
   then Ext_ControlAddr_Error(CapEx_LengthViolation, PCC_IDX)
   else Ext_ControlAddr_OK(pc)
 }
@@ -178,7 +178,7 @@ type ext_data_addr_error = (CapEx, capreg_idx)
 val ddc_and_resulting_addr : (xlenbits) -> (Capability, xlenbits)
 function ddc_and_resulting_addr (addr) = {
   let ddc_val = DDC in
-  (ddc_val, if (have_ddc_relocation()) then ddc_val.address + addr else addr)
+  (ddc_val, if (have_ddc_relocation()) then address_to_int(ddc_val.address) + addr else addr)
 }
 
 /*!
@@ -190,7 +190,7 @@ val get_cheri_mode_cap_addr : (regidx, xlenbits) -> (Capability, xlenbits, capre
 function get_cheri_mode_cap_addr (base_reg : regidx, offset : xlenbits) = {
   if (PCC.flag_cap_mode) then
     let base_cap = C(base_reg) in
-    (base_cap, base_cap.address + offset, 0b0 @ base_reg)
+    (base_cap, address_to_int(base_cap.address)+ offset, 0b0 @ base_reg)
   else
     let (ddc_val, addr) = ddc_and_resulting_addr(X(base_reg) + offset) in
     (ddc_val, addr, DDC_IDX);
@@ -203,7 +203,7 @@ function ext_data_get_addr(base_reg : regidx, offset : xlenbits, acc : AccessTyp
 
   if not(auth_val.tag) then
     Ext_DataAddr_Error(CapEx_TagViolation, auth_idx)
-  else if not(inCapBounds(auth_val, newAddr, word_width_bytes(width))) then
+  else if not(inCapBounds(auth_val, int_to_address(newAddr), word_width_bytes(width))) then
     Ext_DataAddr_Error(CapEx_LengthViolation, auth_idx)
   else
     Ext_DataAddr_OK(newAddr)

@@ -81,7 +81,7 @@ union clause ast = AUIPCC : (bits(20), regidx)
  */
 function clause execute AUIPCC(imm, cd) = {
   let off : xlenbits = sign_extend(imm @ 0x000);
-  let (representable, newCap) = setCapAddr(PCC, PC + off);
+  let (representable, newCap) = setCapAddr(PCC, int_to_address(PC + off));
   C(cd) = clearTagIf(newCap, not(representable));
   RETIRE_SUCCESS
 }
@@ -100,14 +100,14 @@ union clause ast = CJAL : (bits(21), regidx)
 function clause execute(CJAL(imm, cd)) = {
   let off : xlenbits = sign_extend(imm);
   let newPC = PC + off;
-  if not(inCapBounds(PCC, newPC, min_instruction_bytes())) then {
+  if not(inCapBounds(PCC, int_to_address(newPC), min_instruction_bytes())) then {
     handle_cheri_cap_exception(CapEx_LengthViolation, PCC_IDX);
     RETIRE_FAIL
   } else if newPC[1] == bitone & ~(haveRVC()) then {
     handle_mem_exception(newPC,  E_Fetch_Addr_Align());
     RETIRE_FAIL
   } else {
-    let (success, linkCap) = setCapAddr(PCC, nextPC); /* Note that nextPC accounts for compressed instructions */
+    let (success, linkCap) = setCapAddr(PCC, int_to_address(nextPC)); /* Note that nextPC accounts for compressed instructions */
     assert(success, "Link cap should always be representable.");
     C(cd) = linkCap;
     nextPC = newPC;
@@ -134,7 +134,7 @@ union clause ast = CJALR : (bits(12), regidx, regidx)
 function clause execute(CJALR(imm, cs1, cd)) = {
   let cs1_val = C(cs1);
   let off : xlenbits = sign_extend(imm);
-  let newPC = [cs1_val.address + off with 0 = bitzero]; /* clear bit zero as for RISCV JALR */
+  let newPC = [address_to_int(cs1_val.address) + off with 0 = bitzero]; /* clear bit zero as for RISCV JALR */
   let newPCCBase = getCapBaseBits(cs1_val);
   if not(cs1_val.tag) then {
     handle_cheri_reg_exception(CapEx_TagViolation, cs1);
@@ -145,11 +145,11 @@ function clause execute(CJALR(imm, cs1, cd)) = {
   } else if newPC[1] == bitone & ~(haveRVC()) then {
     handle_mem_exception(newPC,  E_Fetch_Addr_Align());
     RETIRE_FAIL
-  } else if not(inCapBounds(cs1_val, newPC, min_instruction_bytes())) then {
+  } else if not(inCapBounds(cs1_val, int_to_address(newPC), min_instruction_bytes())) then {
     handle_cheri_reg_exception(CapEx_LengthViolation, cs1);
     RETIRE_FAIL
   } else {
-    let (success, linkCap) = setCapAddr(PCC, nextPC); /* Note that nextPC accounts for compressed instructions */
+    let (success, linkCap) = setCapAddr(PCC, int_to_address(nextPC)); /* Note that nextPC accounts for compressed instructions */
     assert(success, "Link cap should always be representable.");
     C(cd) = linkCap;
     nextPC = newPC;
@@ -186,7 +186,7 @@ function clause execute (CGetFlags(rd, cs1)) = {
  */
 function clause execute (CGetBase(rd, cs1)) = {
   let capVal = C(cs1);
-  X(rd) = getCapBaseBits(capVal);
+  X(rd) = address_to_int(getCapBaseBits(capVal));
   RETIRE_SUCCESS
 }
 
@@ -196,7 +196,7 @@ function clause execute (CGetBase(rd, cs1)) = {
  */
 function clause execute (CGetOffset(rd, cs1)) = {
   let capVal = C(cs1);
-  X(rd) = getCapOffsetBits(capVal);
+  X(rd) = address_to_int(getCapOffsetBits(capVal));
   RETIRE_SUCCESS
 }
 
@@ -225,8 +225,8 @@ union clause ast = CSetHigh : (regidx, regidx, regidx)
 function clause execute (CSetHigh(cd, cs1, rs2)) = {
   let capVal = C(cs1);
   let intVal = X(rs2);
-  let capLow : cap_addr_width = capToMemBits(capVal)[sizeof(cap_addr_width) - 1 .. 0];
-  let capHigh : cap_high_width = IntVal[cap_high_width=1 .. 0];
+  let capLow : CapAddrBits = capToMemBits(capVal)[sizeof(cap_addr_width) - 1 .. 0];
+  let capHigh : CapHighBits = intVal[sizeof(cap_high_width) - 1 .. 0];
   let newCap : Capability = memBitsToCapability(false, capHigh @ capLow);
   C(cd) = newCap;
   RETIRE_SUCCESS
@@ -286,7 +286,7 @@ function clause execute (CGetTag(rd, cs1)) = {
  */
 function clause execute (CGetAddr(rd, cs1)) = {
   let capVal = C(cs1);
-  X(rd) = capVal.address;
+  X(rd) = address_to_int(capVal.address);
   RETIRE_SUCCESS
 }
 
@@ -342,7 +342,7 @@ function clause execute (CSpecialRW(cd, scr, cs1)) = {
     let cs1_val = C(cs1);
     C(cd) = match unsigned(scr) {
       0  => {
-        let (success, pcc) = setCapAddr(PCC, PC);
+        let (success, pcc) = setCapAddr(PCC, int_to_address(PC));
         assert (success, "PCC with offset PC should always be representable");
         pcc
       },
@@ -399,7 +399,7 @@ function clause execute(CToPtr(rd, cs1, cs2)) = {
   X(rd) = if not(cs1_val.tag) then
             zeros()
           else
-            cs1_val.address - getCapBaseBits(cs2_val);
+            address_to_int(cs1_val.address - getCapBaseBits(cs2_val));
   RETIRE_SUCCESS
 }
 
@@ -412,7 +412,7 @@ function clause execute(CSub(rd, cs1, cs2)) = {
   let cs2_val = C(cs2);
   let cs1_val = C(cs1);
 
-  X(rd) = cs1_val.address - cs2_val.address;
+  X(rd) = address_to_int(cs1_val.address - cs2_val.address);
   RETIRE_SUCCESS
 }
 
@@ -430,7 +430,7 @@ function clause execute (CIncOffset(cd, cs1, rs2)) = {
   let rs2_val = X(rs2);
 
   let inCap = cs1_val;
-  let (success, newCap) = incCapOffset(inCap, rs2_val);
+  let (success, newCap) = incCapOffset(inCap, int_to_address(rs2_val));
 
   C(cd) = clearTagIf(newCap, not(success));
   RETIRE_SUCCESS
@@ -450,7 +450,7 @@ function clause execute (CIncOffsetImmediate(cd, cs1, imm)) = {
   let immBits : xlenbits = sign_extend(imm);
 
   let inCap = cs1_val;
-  let (success, newCap) = incCapOffset(inCap, immBits);
+  let (success, newCap) = incCapOffset(inCap, int_to_address(immBits));
 
   C(cd) = clearTagIf(newCap, not(success));
   RETIRE_SUCCESS
@@ -470,7 +470,7 @@ function clause execute (CSetOffset(cd, cs1, rs2)) = {
   let rs2_val = X(rs2);
 
   let inCap = cs1_val;
-  let (success, newCap) = setCapOffset(inCap, rs2_val);
+  let (success, newCap) = setCapOffset(inCap, int_to_address(rs2_val));
 
   C(cd) = clearTagIf(newCap, not(success));
   RETIRE_SUCCESS
@@ -490,7 +490,7 @@ function clause execute (CSetAddr(cd, cs1, rs2)) = {
   let rs2_val = X(rs2);
 
   let inCap = cs1_val;
-  let (representable, newCap) = setCapAddr(inCap, rs2_val);
+  let (representable, newCap) = setCapAddr(inCap, int_to_address(rs2_val));
 
   C(cd) = clearTagIf(newCap, not(representable));
   RETIRE_SUCCESS
@@ -511,8 +511,8 @@ function clause execute (CSetBounds(cd, cs1, rs2)) = {
   let rs2_val = X(rs2);
 
   let newBase = cs1_val.address;
-  let newTop : CapLenBits = zero_extend(newBase) + zero_extend(rs2_val);
-  let inBounds = inCapBounds(cs1_val, newBase, unsigned(rs2_val));
+  let newTop : CapLenBits = zero_extend(newBase) + zero_extend(int_to_address(rs2_val));
+  let inBounds = inCapBounds(cs1_val, newBase, unsigned(int_to_address(rs2_val)));
 
   let inCap = cs1_val;
   let (_, newCap) = setCapBounds(inCap, newBase, newTop);
@@ -559,8 +559,8 @@ function clause execute (CSetBoundsExact(cd, cs1, rs2)) = {
   let rs2_val = X(rs2);
 
   let newBase = cs1_val.address;
-  let newTop : CapLenBits = zero_extend(newBase) + zero_extend(rs2_val);
-  let inBounds = inCapBounds(cs1_val, newBase, unsigned(rs2_val));
+  let newTop : CapLenBits = zero_extend(newBase) + zero_extend(int_to_address(rs2_val));
+  let inBounds = inCapBounds(cs1_val, newBase, unsigned(int_to_address(rs2_val)));
 
   let inCap = cs1_val;
   let (exact, newCap) = setCapBounds(inCap, newBase, newTop);
@@ -608,7 +608,7 @@ function clause execute (CFromPtr(cd, cs1, rs2)) = {
     RETIRE_SUCCESS
   } else {
     let inCap = cs1_val;
-    let (success, newCap) = setCapOffset(inCap, rs2_val);
+    let (success, newCap) = setCapOffset(inCap, int_to_address(rs2_val));
     C(cd) = clearTagIf(newCap, not(success));
     RETIRE_SUCCESS
   }
@@ -777,7 +777,7 @@ function handle_load_data_via_cap(rd, auth_idx, auth_val, vaddrBits, is_unsigned
   if not(auth_val.tag) then {
     handle_cheri_cap_exception(CapEx_TagViolation, auth_idx);
     RETIRE_FAIL
-  } else if not(inCapBounds(auth_val, vaddrBits, size)) then {
+  } else if not(inCapBounds(auth_val, int_to_address(vaddrBits), size)) then {
     handle_cheri_cap_exception(CapEx_LengthViolation, auth_idx);
     RETIRE_FAIL
   } else if check_misaligned(vaddrBits, width) then {
@@ -831,7 +831,7 @@ union clause ast = LoadDataCap : (regidx, regidx, bool, word_width)
 function clause execute (LoadDataCap(rd, cs1, is_unsigned, width)) = {
   let cs1_val = C(cs1);
   let vaddr = cs1_val.address;
-  handle_load_data_via_cap(rd, 0b0 @ cs1, cs1_val, vaddr, is_unsigned, width)
+  handle_load_data_via_cap(rd, 0b0 @ cs1, cs1_val, address_to_int(vaddr), is_unsigned, width)
 }
 
 val handle_load_cap_via_cap : (regidx, capreg_idx, Capability, xlenbits) -> Retired effect {escape, rmem, rmemt, rreg, wmv, wmvt, wreg}
@@ -841,7 +841,7 @@ function handle_load_cap_via_cap(cd, auth_idx, auth_val, vaddrBits) = {
   if not(auth_val.tag) then {
     handle_cheri_cap_exception(CapEx_TagViolation, auth_idx);
     RETIRE_FAIL
-  } else if not(inCapBounds(auth_val, vaddrBits, cap_size)) then {
+  } else if not(inCapBounds(auth_val, int_to_address(vaddrBits), cap_size)) then {
     handle_cheri_cap_exception(CapEx_LengthViolation, auth_idx);
     RETIRE_FAIL
   } else if not(is_aligned_addr(vaddrBits, cap_size)) then {
@@ -900,7 +900,7 @@ union clause ast = LoadCapCap : (regidx, regidx)
 function clause execute (LoadCapCap(cd, cs1)) = {
   let cs1_val = C(cs1);
   let vaddr = cs1_val.address;
-  handle_load_cap_via_cap(cd, 0b0 @ cs1, cs1_val, vaddr)
+  handle_load_cap_via_cap(cd, 0b0 @ cs1, cs1_val, address_to_int(vaddr))
 }
 
 union clause ast = CLoadTags : (regidx, regidx)
@@ -957,14 +957,14 @@ function clause execute (CLoadTags(rd, cs1)) = {
     handle_cheri_reg_exception(CapEx_LengthViolation, cs1);
     RETIRE_FAIL
   } else if not(unsigned(vaddr) % (caps_per_cache_line * cap_size) == 0) then {
-    handle_mem_exception(vaddr, E_Load_Addr_Align());
+    handle_mem_exception(address_to_int(vaddr), E_Load_Addr_Align());
     RETIRE_FAIL
-  } else match translateAddr(vaddr, Read(Cap)) {
+  } else match translateAddr(address_to_int(vaddr), Read(Cap)) {
     TR_Failure(E_Extension(_), _) => { internal_error(__FILE__, __LINE__, "unexpected cheri exception for tags load") },
-    TR_Failure(e, _) => { handle_mem_exception(vaddr, e); RETIRE_FAIL },
+    TR_Failure(e, _) => { handle_mem_exception(address_to_int(vaddr), e); RETIRE_FAIL },
     TR_Address(addr, ptw_info) => {
       if ptw_info.ptw_lc != PTW_LC_OK then {
-        handle_mem_exception(vaddr, E_Extension(EXC_LOAD_CAP_PAGE_FAULT));
+        handle_mem_exception(address_to_int(vaddr), E_Extension(EXC_LOAD_CAP_PAGE_FAULT));
         RETIRE_FAIL
       } else {
         mtags : MemoryOpResult(bits(caps_per_cache_line)) = MemValue(zeros());
@@ -983,7 +983,7 @@ function clause execute (CLoadTags(rd, cs1)) = {
         };
 
         match mtags {
-          MemException(e) => { handle_mem_exception(vaddr, e); RETIRE_FAIL },
+          MemException(e) => { handle_mem_exception(address_to_int(vaddr), e); RETIRE_FAIL },
           MemValue(v) => { X(rd) = zero_extend(v); RETIRE_SUCCESS }
         }
       }
@@ -1009,7 +1009,7 @@ function handle_loadres_data_via_cap(rd, auth_idx, auth_val, vaddrBits, width) =
   if not(auth_val.tag) then {
     handle_cheri_cap_exception(CapEx_TagViolation, auth_idx);
     RETIRE_FAIL
-  } else if not(inCapBounds(auth_val, vaddrBits, size)) then {
+  } else if not(inCapBounds(auth_val, int_to_address(vaddrBits), size)) then {
     handle_cheri_cap_exception(CapEx_LengthViolation, auth_idx);
     RETIRE_FAIL
   } else if check_res_misaligned(vaddrBits, width) then {
@@ -1036,7 +1036,7 @@ function handle_loadres_cap_via_cap(cd, auth_idx, auth_val, vaddrBits, aq, rl) =
 if not(auth_val.tag) then {
     handle_cheri_cap_exception(CapEx_TagViolation, auth_idx);
     RETIRE_FAIL
-  } else if not(inCapBounds(auth_val, vaddrBits, cap_size)) then {
+  } else if not(inCapBounds(auth_val, int_to_address(vaddrBits), cap_size)) then {
     handle_cheri_cap_exception(CapEx_LengthViolation, auth_idx);
     RETIRE_FAIL
   } else if not(is_aligned_addr(vaddrBits, cap_size)) then {
@@ -1049,12 +1049,13 @@ if not(auth_val.tag) then {
       let c = mem_read_cap(addr, aq, aq & rl, false);
       match c {
         MemValue(v) => {
-          let cr = if ptw_info.ptw_lc == PTW_LC_CLEAR
+          /*let cr = if ptw_info.ptw_lc == PTW_LC_CLEAR
                    then clearTag(v) /* strip the tag */
                    else {
                      /* the Sail model currently reserves virtual addresses */
                      load_reservation(addr)
-                   };
+                   };*/
+          let cr = clearTag(v);
           C(cd) = cr;
           RETIRE_SUCCESS
         },
@@ -1091,7 +1092,7 @@ function clause execute (LoadResCap(rd, cs1, width)) = {
   if haveAtomics() then {
     let cs1_val = C(cs1);
     let vaddr = cs1_val.address;
-    handle_loadres_data_via_cap(rd, 0b0 @ cs1, cs1_val, vaddr, width)
+    handle_loadres_data_via_cap(rd, 0b0 @ cs1, cs1_val, address_to_int(vaddr), width)
   } else {
     handle_illegal();
     RETIRE_FAIL
@@ -1102,8 +1103,8 @@ union clause ast = LoadResCapCap : (regidx, regidx)
 function clause execute (LoadResCapCap(cd, cs1)) = {
   if haveAtomics() then {
     let cs1_val = C(cs1);
-    let vaddr = cs1_val.address + X(cs1);
-    handle_loadres_cap_via_cap(cd, 0b0 @ cs1, cs1_val, vaddr, false, false)
+    let vaddr = cs1_val.address + int_to_address(X(cs1));
+    handle_loadres_cap_via_cap(cd, 0b0 @ cs1, cs1_val, address_to_int(vaddr), false, false)
   } else {
     handle_illegal();
     RETIRE_FAIL
@@ -1134,7 +1135,7 @@ function handle_store_data_via_cap(rs2, auth_idx, auth_val, vaddrBits, width) = 
   if not(auth_val.tag) then {
     handle_cheri_cap_exception(CapEx_TagViolation, auth_idx);
     RETIRE_FAIL
-  } else if not(inCapBounds(auth_val, vaddrBits, size)) then {
+  } else if not(inCapBounds(auth_val, int_to_address(vaddrBits), size)) then {
     handle_cheri_cap_exception(CapEx_LengthViolation, auth_idx);
     RETIRE_FAIL
   } else if check_misaligned(vaddrBits, width) then {
@@ -1200,7 +1201,7 @@ union clause ast = StoreDataCap : (regidx, regidx, word_width)
 function clause execute (StoreDataCap(rs2, cs1, width)) = {
   let cs1_val = C(cs1);
   let vaddr = cs1_val.address;
-  handle_store_data_via_cap(rs2, 0b0 @ cs1, cs1_val, vaddr, width)
+  handle_store_data_via_cap(rs2, 0b0 @ cs1, cs1_val, address_to_int(vaddr), width)
 }
 
 val handle_store_cap_via_cap : (regidx, capreg_idx, Capability, xlenbits) -> Retired effect {eamem, escape, rmem, rmemt, rreg, wmv, wreg, wmvt}
@@ -1211,7 +1212,7 @@ function handle_store_cap_via_cap(cs2, auth_idx, auth_val, vaddrBits) = {
   if not(auth_val.tag) then {
     handle_cheri_cap_exception(CapEx_TagViolation, auth_idx);
     RETIRE_FAIL
-  } else if not(inCapBounds(auth_val, vaddrBits, cap_size)) then {
+  } else if not(inCapBounds(auth_val, int_to_address(vaddrBits), cap_size)) then {
     handle_cheri_cap_exception(CapEx_LengthViolation, auth_idx);
     RETIRE_FAIL
   } else if not(is_aligned_addr(vaddrBits, cap_size)) then {
@@ -1268,7 +1269,7 @@ union clause ast = StoreCapCap : (regidx, regidx)
 function clause execute (StoreCapCap(cs2, cs1)) = {
   let cs1_val = C(cs1);
   let vaddr = cs1_val.address;
-  handle_store_cap_via_cap(cs2, 0b0 @ cs1, cs1_val, vaddr)
+  handle_store_cap_via_cap(cs2, 0b0 @ cs1, cs1_val, address_to_int(vaddr))
 }
 
 union clause ast = LoadCapImm : (regidx, regidx, bits(12))
@@ -1336,7 +1337,7 @@ function handle_store_cond_data_via_cap(rs2, auth_idx, auth_val, vaddrBits, widt
   if not(auth_val.tag) then {
     handle_cheri_cap_exception(CapEx_TagViolation, auth_idx);
     RETIRE_FAIL
-  } else if not(inCapBounds(auth_val, vaddrBits, size)) then {
+  } else if not(inCapBounds(auth_val, int_to_address(vaddrBits), size)) then {
     handle_cheri_cap_exception(CapEx_LengthViolation, auth_idx);
     RETIRE_FAIL
   } else if check_res_misaligned(vaddrBits, width) then {
@@ -1396,7 +1397,7 @@ function handle_store_cond_cap_via_cap(rd, cs2, auth_idx, auth_val, vaddrBits, a
   if not(auth_val.tag) then {
     handle_cheri_cap_exception(CapEx_TagViolation, auth_idx);
     RETIRE_FAIL
-  } else if not(inCapBounds(auth_val, vaddrBits, cap_size)) then {
+  } else if not(inCapBounds(auth_val, int_to_address(vaddrBits), cap_size)) then {
     handle_cheri_cap_exception(CapEx_LengthViolation, auth_idx);
     RETIRE_FAIL
   } else if not(is_aligned_addr(vaddrBits, cap_size)) then {
@@ -1484,7 +1485,7 @@ function clause execute StoreCondCap(rs2, cs1, width) = {
   } else if haveAtomics() then {
     let cs1_val = C(cs1);
     let vaddr = cs1_val.address;
-    handle_store_cond_data_via_cap(rs2, 0b0 @ cs1, cs1_val, vaddr, width)
+    handle_store_cond_data_via_cap(rs2, 0b0 @ cs1, cs1_val, address_to_int(vaddr), width)
   } else {
     handle_illegal();
     RETIRE_FAIL
@@ -1502,7 +1503,7 @@ function clause execute StoreCondCapCap(cs2, cs1) = {
   } else if haveAtomics() then {
     let cs1_val = C(cs1);
     let vaddr = cs1_val.address;
-    handle_store_cond_cap_via_cap(cs2, cs2, 0b0 @ cs1, cs1_val, vaddr, false, false, true)
+    handle_store_cond_cap_via_cap(cs2, cs2, 0b0 @ cs1, cs1_val, address_to_int(vaddr), false, false, true)
   } else {
     handle_illegal();
     RETIRE_FAIL
@@ -1534,7 +1535,7 @@ function clause execute AMOSwapCap(cd, cs2, rs1_cs1, aq, rl) = {
     if not(auth_val.tag) then {
       handle_cheri_cap_exception(CapEx_TagViolation, auth_idx);
       RETIRE_FAIL
-    } else if not(inCapBounds(auth_val, vaddr, cap_size)) then {
+    } else if not(inCapBounds(auth_val, int_to_address(vaddr), cap_size)) then {
       handle_cheri_cap_exception(CapEx_LengthViolation, auth_idx);
       RETIRE_FAIL
     } else if not(is_aligned_addr(vaddr, cap_size)) then {
@@ -1606,8 +1607,10 @@ mapping clause encdec = CLoadTags(rd, cs1) if (haveXcheri()) <-> 0b1111111 @ 0b1
 mapping clause encdec = CRRL(rd, rs1) if (haveXcheri()) <-> 0b1111111 @ 0b01000 @ rs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri())
 mapping clause encdec = CRAM(rd, rs1) if (haveXcheri()) <-> 0b1111111 @ 0b01001 @ rs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri())
 
+/*
 mapping clause encdec = CClear(q, m3 @ m5)  if (haveXcheri()) <-> 0b1111111 @ 0b01110 @ q : bits(2) @ m3 : bits(3) @ 0b000 @ m5 : regidx @ 0b1011011 if (haveXcheri())
 mapping clause encdec = FPClear(q, m3 @ m5) if (haveXcheri()) <-> 0b1111111 @ 0b10000 @ q : bits(2) @ m3 : bits(3) @ 0b000 @ m5 : regidx @ 0b1011011 if (haveXcheri())
+*/
 
 mapping clause assembly = CGetFlags(rd, cs1)  <-> "cgetflags"  ^ spc() ^ reg_name(rd) ^ sep() ^ cap_reg_name(cs1)
 mapping clause assembly = CGetBase(rd, cs1)   <-> "cgetbase"   ^ spc() ^ reg_name(rd) ^ sep() ^ cap_reg_name(cs1)
@@ -1629,13 +1632,13 @@ mapping clause assembly = CLoadTags(rd, cs1) <-> "cloadtags" ^ spc() ^ reg_name(
 
 mapping clause assembly = CRRL(rd, rs1) <-> "crrl" ^ spc() ^ reg_name(rd) ^ sep() ^ reg_name(rs1)
 mapping clause assembly = CRAM(rd, rs1) <-> "cram" ^ spc() ^ reg_name(rd) ^ sep() ^ reg_name(rs1)
-
+/*
 mapping clause assembly = CClear(q, m8)  <-> "cclear"  ^ spc() ^ hex_bits_2(q) ^ sep() ^ hex_bits_8(m8)
 mapping clause assembly = FPClear(q, m8) <-> "fpclear" ^ spc() ^ hex_bits_2(q) ^ sep() ^ hex_bits_8(m8)
-
+*/
 /* Three arg */
 
-mapping clause encdec = CSetFlags(cd, cs1, rs2)   if (haveXcheri()) <-> 0b0001110 @ rs2 @ cs1 @ 0b000 @ cd @ 0b1011011 if (haveXcheri())
+/* mapping clause encdec = CSetFlags(cd, cs1, rs2)   if (haveXcheri()) <-> 0b0001110 @ rs2 @ cs1 @ 0b000 @ cd @ 0b1011011 if (haveXcheri()) */
 mapping clause encdec = CSetOffset(cd, cs1, rs2)  if (haveXcheri()) <-> 0b0001111 @ rs2 @ cs1 @ 0b000 @ cd @ 0b1011011 if (haveXcheri())
 mapping clause encdec = CSetAddr(cd, cs1, rs2)    if (haveXcheri()) <-> 0b0010000 @ rs2 @ cs1 @ 0b000 @ cd @ 0b1011011 if (haveXcheri())
 mapping clause encdec = CSetHigh(cd, cs1, rs2)    if (haveXcheri()) <-> 0b0010110 @ rs2 @ cs1 @ 0b000 @ cd @ 0b1011011 if (haveXcheri())
@@ -1643,7 +1646,6 @@ mapping clause encdec = CIncOffset(cd, cs1, rs2)  if (haveXcheri()) <-> 0b001000
 mapping clause encdec = CSetBounds(cd, cs1, rs2)  if (haveXcheri()) <-> 0b0001000 @ rs2 @ cs1 @ 0b000 @ cd @ 0b1011011 if (haveXcheri())
 mapping clause encdec = CSetBoundsExact(cd, cs1, rs2) if (haveXcheri()) <-> 0b0001001 @ rs2 @ cs1 @ 0b000 @ cd @ 0b1011011 if (haveXcheri())
 mapping clause encdec = CBuildCap(cd, cs1, cs2)   if (haveXcheri()) <-> 0b0011101 @ cs2 @ cs1 @ 0b000 @ cd @ 0b1011011 if (haveXcheri())
-mapping clause encdec = CCopyType(cd, cs1, cs2)   if (haveXcheri()) <-> 0b0011110 @ cs2 @ cs1 @ 0b000 @ cd @ 0b1011011 if (haveXcheri())
 
 mapping clause encdec = CToPtr(rd, cs1, cs2)      if (haveXcheri()) <-> 0b0010010 @ cs2 @ cs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri())
 mapping clause encdec = CFromPtr(cd, cs1, rs2)    if (haveXcheri()) <-> 0b0010011 @ rs2 @ cs1 @ 0b000 @ cd @ 0b1011011 if (haveXcheri())
@@ -1657,7 +1659,7 @@ mapping clause encdec = CSetBoundsImmediate(cd, cs1, imm12) if (haveXcheri()) <-
 
 mapping clause encdec = CSEQX(rd, cs1, cs2) if (haveXcheri()) <-> 0b0100001 @ cs2 @ cs1 @ 0b000 @ rd @ 0b1011011 if (haveXcheri())
 
-mapping clause assembly = CSetFlags(cd, cs1, rs2)  <-> "csetflags"  ^ spc() ^ cap_reg_name(cd) ^ sep() ^ cap_reg_name(cs1) ^ sep() ^ reg_name(rs2)
+/* mapping clause assembly = CSetFlags(cd, cs1, rs2)  <-> "csetflags"  ^ spc() ^ cap_reg_name(cd) ^ sep() ^ cap_reg_name(cs1) ^ sep() ^ reg_name(rs2) */
 mapping clause assembly = CSetOffset(cd, cs1, rs2) <-> "csetoffset" ^ spc() ^ cap_reg_name(cd) ^ sep() ^ cap_reg_name(cs1) ^ sep() ^ reg_name(rs2)
 mapping clause assembly = CSetAddr(cd, cs1, rs2)   <-> "csetaddr"   ^ spc() ^ cap_reg_name(cd) ^ sep() ^ cap_reg_name(cs1) ^ sep() ^ reg_name(rs2)
 mapping clause assembly = CSetHigh(cd, cs1, rs2)  <-> "csethigh"    ^ spc() ^ cap_reg_name(cd) ^ sep() ^ cap_reg_name(cs1) ^ sep() ^ reg_name(rs2)
@@ -1665,7 +1667,6 @@ mapping clause assembly = CIncOffset(cd, cs1, rs2) <-> "cincoffset" ^ spc() ^ ca
 mapping clause assembly = CSetBounds(cd, cs1, rs2) <-> "csetbounds" ^ spc() ^ cap_reg_name(cd) ^ sep() ^ cap_reg_name(cs1) ^ sep() ^ reg_name(rs2)
 mapping clause assembly = CSetBoundsExact(cd, cs1, rs2) <-> "csetboundsexact" ^ spc() ^ cap_reg_name(cd) ^ sep() ^ cap_reg_name(cs1) ^ sep() ^ reg_name(rs2)
 mapping clause assembly = CBuildCap(cd, cs1, cs2) <-> "cbuildcap"   ^ spc() ^ cap_reg_name(cd) ^ sep() ^ cap_reg_name(cs1) ^ sep() ^ cap_reg_name(cs2)
-mapping clause assembly = CCopyType(cd, cs1, cs2) <-> "ccopytype"   ^ spc() ^ cap_reg_name(cd) ^ sep() ^ cap_reg_name(cs1) ^ sep() ^ cap_reg_name(cs2)
 
 mapping clause assembly = CToPtr(rd, cs1, cs2)    <-> "ctoptr"      ^ spc() ^ reg_name(rd) ^ sep() ^ cap_reg_name(cs1) ^ sep() ^ cap_reg_name(cs2)
 mapping clause assembly = CFromPtr(cd, cs1, rs2)  <-> "cfromptr"    ^ spc() ^ cap_reg_name(cd) ^ sep() ^ cap_reg_name(cs1) ^ sep() ^ reg_name(rs2)

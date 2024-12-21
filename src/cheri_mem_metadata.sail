@@ -60,53 +60,44 @@
 /*  SUCH DAMAGE.                                                                         */
 /*=======================================================================================*/
 
-/*=======================================================================================*/
-/*  CHERI RISCV Sail Model (Truisa Version)                                              */
-/*                                                                                       */
-/*  This CHERI Sail RISC-V architecture model here, comprising all files and             */
-/*  directories except for the snapshots of the Lem and Sail libraries in the            */
-/*  prover_snapshots directory (which include copies of their licenses), is subject      */
-/*  to the BSD two-clause licence below.                                                 */
-/*                                                                                       */
-/*  Copyright (c) 2024-2025                                                              */
-/*    Dong Tong, Peking University                                                       */
-/*=======================================================================================*/
+/* CHERI uses a boolean tag as metadata in memory. */
 
-/* width of capability in bytes (excluding tag) */
-type cap_size : Int = 8
-let  cap_size = sizeof(cap_size)
-type log2_cap_size : Int = 3
-let  log2_cap_size = sizeof(log2_cap_size)
-type CapBits = bits(8 * cap_size)
-type cap_flags_width : Int = 1
-let  cap_flags_width = sizeof(cap_flags_width)
-type cap_E_width : Int = 6
-let  cap_E_width = sizeof(cap_E_width)
-type cap_high_width : Int = cap_flags_width + cap_E_width
-let  cap_high_width = sizeof(cap_high_width)
-type cap_addr_width : Int = 57
-let  cap_addr_width = sizeof(cap_addr_width)
-type cap_len_width : Int = cap_addr_width + 1
-let  cap_len_width = sizeof(cap_len_width)
+type mem_meta = bool
 
-/* For CLoadTags and CClearTags, which operate at cache line granularity */
-type caps_per_cache_line : Int = 8
-let  caps_per_cache_line = sizeof(caps_per_cache_line)
+let default_meta : mem_meta = false
 
-/* Capability format completely compressed. Tag is out of band */
-struct EncCapability = {
-  flags      : bits(cap_flags_width),
-  E          : bits(cap_E_width),
-  address    : bits(cap_addr_width)
+/* address LSB truncation/extension */
+type tagaddrbits = bits(xlen - log2_cap_size)
+function addr_to_tag_addr(addr : xlenbits) -> tagaddrbits = truncateLSB(addr, sizeof(xlen) - log2_cap_size)
+function tag_addr_to_addr(tag_addr : tagaddrbits) -> xlenbits = tag_addr @ zeros(log2_cap_size)
+
+/* FIXME: we should have a maximum cap_size constraint for 'n.
+ * This would check that the assumption below of a max span of two regions is valid.
+ */
+val __WriteRAM_Meta : forall 'n. (xlenbits, atom('n), mem_meta) -> unit effect {wmvt}
+function __WriteRAM_Meta(addr, width, tag) = {
+  let tag_addr = addr_to_tag_addr(addr);
+  if get_config_print_mem() then
+    print_mem("tag[" ^ BitStr(tag_addr_to_addr(tag_addr)) ^ "] <- " ^ (if tag then "1" else "0"));
+  MEMw_tag(zero_extend(tag_addr), tag);
+  /* If the write crosses a cap_size alignment boundary then we need
+   * to write the tag for the subsequent region.  Writes greater than
+   * cap_size that might span more than two regions are not supported.
+   */
+  let tag_addr2 = addr_to_tag_addr(addr + width - 1);
+  if tag_addr != tag_addr2 then {
+    if get_config_print_mem() then
+      print_mem("tag[" ^ BitStr(tag_addr_to_addr(tag_addr2)) ^ "] <- " ^ (if tag then "1" else "0"));
+    MEMw_tag(zero_extend(tag_addr2), tag);
+  }
 }
 
-function capBitsToEncCapability(c) : CapBits -> EncCapability = struct {
-  flags      = c[63..63],
-  E          = c[62..57],
-  address    = c[56..0]
+/* FIXME: we should have a maximum cap_size constraint for 'n. */
+val __ReadRAM_Meta  : forall 'n. (xlenbits, atom('n)) -> mem_meta effect {rmemt}
+function __ReadRAM_Meta(addr, width) = {
+  let tag_addr = addr_to_tag_addr(addr);
+  let tag = MEMr_tag(zero_extend(tag_addr));
+  if get_config_print_mem() then
+    print_mem("tag[R," ^ BitStr(tag_addr_to_addr(tag_addr)) ^ "] -> " ^ (if tag then "1" else "0"));
+  tag
 }
-
-function encCapToBits(cap) : EncCapability -> CapBits =
-  cap.flags @
-  cap.E @
-  cap.address

@@ -70,17 +70,17 @@ type ext_exception = unit
 function handle_trap_extension(p : Privilege, pc : xlenbits, u : option(unit)) -> unit = {
   match p {
     Machine => {
-      let (representable, mepcc) = setCapAddr(PCC, pc);
+      let (representable, mepcc) = setCapAddr(PCC, int_to_address(pc));
       assert(representable, "mepcc should always be representable");
       MEPCC   = mepcc
     },
     Supervisor => {
-      let (representable, sepcc) = setCapAddr(PCC, pc);
+      let (representable, sepcc) = setCapAddr(PCC, int_to_address(pc));
       assert(representable, "sepcc should always be representable");
       SEPCC   = sepcc
     },
     User => {
-      let (representable, uepcc) = setCapAddr(PCC, pc);
+      let (representable, uepcc) = setCapAddr(PCC, int_to_address(pc));
       assert(representable, "uepcc should always be representable");
       UEPCC   = uepcc
     }
@@ -98,7 +98,7 @@ function prepare_trap_vector(p : Privilege, c : Mcause) -> xlenbits = {
   /* NB we use address, not offset here because even though tvec is the offset
      we want the absolute address to insert in PC. The bottom two bits (mode) should
      be the same because we enforce aligned tcc base. */
-  match tvec_addr(Mk_Mtvec(tcc.address), c) {
+  match tvec_addr(Mk_Mtvec(address_to_int(tcc.address)), c) {
     Some(addr) => { nextPCC = tcc; addr },
     None()     => internal_error(__FILE__, __LINE__, "Invalid tvec mode")
   }
@@ -152,7 +152,7 @@ function prepare_xret_target(p) = {
   let epcc = legalize_epcc(epcc);
 
   nextPCC = epcc;
-  epcc.address
+  address_to_int(epcc.address)
 }
 
 /* other trap-related CSRs */

@@ -64,7 +64,7 @@
 
 val get_arch_pc : unit -> xlenbits effect {rreg}
 function get_arch_pc () =
-  if have_pcc_relocation() then PC - getCapBaseBits(PCC) else PC
+  if have_pcc_relocation() then PC - address_to_int(getCapBaseBits(PCC)) else PC
 
 /* FIXME: When have_pcc_relocation() is true, there is asymmetry
  * between get_next_pc and set_next_pc where one returns the
@@ -76,7 +76,7 @@ function get_arch_pc () =
 
 val get_next_pc : unit -> xlenbits effect {rreg}
 function get_next_pc() =
-  if have_pcc_relocation() then nextPC - getCapBaseBits(PCC) else nextPC
+  if have_pcc_relocation() then nextPC - address_to_int(getCapBaseBits(PCC)) else nextPC
 
 val set_next_pc : xlenbits -> unit effect {wreg}
 function set_next_pc(pc) =

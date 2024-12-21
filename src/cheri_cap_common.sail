@@ -79,9 +79,9 @@ type CapAddrInt   = range(0, (2 ^ cap_addr_width) - 1)
 type CapLenBits   = bits(cap_len_width)
 type CapLen       = range(0, (2 ^ cap_len_width))
 type CapFlagsBits = bits(cap_flags_width)
-
+type CapHighBits  = bits(cap_high_width)
 /* Reset E */
-let cap_max_E   = cap_len_width - 1;
+let cap_max_E   = cap_len_width
 let cap_reset_E = to_bits(cap_E_width, cap_max_E)
 
 /*! A partially decompressed version of a capability */
@@ -111,7 +111,7 @@ function encCapabilityToCapability(t,c) : (bool, EncCapability) -> Capability = 
   return struct {
     tag                    = t,
     flag_cap_mode          = bit_to_bool(c.flags[0]),
-    E                      = c.E
+    E                      = c.E,
     address                = c.address
   }
 }
@@ -121,7 +121,7 @@ function capBitsToCapability(t, c) : (bool, CapBits) -> Capability = encCapabili
 function capToEncCap(cap) : Capability -> EncCapability = {
   return struct {
     flags = bool_to_bits(cap.flag_cap_mode),
-    E = cap.E;
+    E = cap.E,
     address = cap.address
   };
 }
@@ -149,13 +149,13 @@ function getCapBoundsBits(c) : Capability -> (CapAddrBits, CapLenBits) =
   let E = min(cap_max_E, unsigned(c.E)) in
   let a : CapAddrBits = c.address in
   let a_top = (a >> E) in {
-    base : CapLenBits = truncate( a_top      @ zeros(E), cap_len_width);
-    top  : CapLenBits = truncate((a_top + 1) @ zeros(E), cap_len_width);
+    base : CapLenBits = truncate(  0b0 @ a_top       @ zeros(E), cap_len_width);
+    top  : CapLenBits = truncate(((0b0 @ a_top) + 1) @ zeros(E), cap_len_width);
   
   (base[(cap_addr_width - 1)..0], top) 
   }
 
-function getCapBounds(cap) : Capability -> (CapAddrInt, CapLenInt) =
+function getCapBounds(cap) : Capability -> (CapAddrInt, CapLen) =
   let (base, top) = getCapBoundsBits(cap) in
   (unsigned(base), unsigned(top))
 
@@ -164,10 +164,10 @@ function setCapBounds(cap, base, top) : (Capability, CapAddrBits, CapLenBits) ->
   /* {cap with base=base; length=(bits(64)) length; offset=0} */
   let ext_base = 0b0 @ base;
   let length = top - ext_base;
-  let e = cap_max_E - count_leading_zeros(length[cap_len_width-1..0]);
+  let e = cap_max_E - count_leading_zeros(length[cap_len_width - 1..0]);
 
   let newCap = {cap with address=base, E=to_bits(cap_E_width, e)};
-  let exact = ture;
+  let exact = true;
   (exact, newCap)
 }
 
@@ -329,7 +329,19 @@ function getRepresentableLength(len) : xlenbits -> xlenbits = {
  * returns the capability offset instead.
  */
 function cap_to_integer_pc (cap: Capability) -> xlenbits = {
+  if (have_pcc_relocation()) then zeros(cap_high_width) @ getCapOffsetBits(cap) else zeros(cap_high_width) @ cap.address
+}
+
+function cap_to_address_pc (cap: Capability) -> CapAddrBits = {
   if (have_pcc_relocation()) then getCapOffsetBits(cap) else cap.address
+}
+
+function int_to_address (len: xlenbits) -> CapAddrBits = {
+  truncate(len, cap_addr_width)
+}
+
+function address_to_int (addr: CapAddrBits) -> xlenbits = {
+  zeros(cap_high_width) @ addr
 }
 
 /**
@@ -339,5 +351,5 @@ function cap_to_integer_pc (cap: Capability) -> xlenbits = {
  * updates the capability offset instead.
  */
 function update_cap_with_integer_pc (cap: Capability, pc: xlenbits) -> Capability = {
-  if (have_pcc_relocation()) then setCapOffsetChecked(cap, pc) else setCapAddrChecked(cap, pc)
+  if (have_pcc_relocation()) then setCapOffsetChecked(cap, int_to_address(pc)) else setCapAddrChecked(cap, int_to_address(pc))
 }
